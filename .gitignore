@@ -22,6 +22,9 @@ Thumbs.db
 .vscode/
 .idea/
 
+# --- Secrets / local config ---
+.env
+
 # --- Model weights / artifacts ---
 weights/
 *.pth
@@ -30,18 +33,9 @@ weights/
 *.onnx
 
 models/
-*.pht
-*.safetensors
-*.ckpt
-*.onnx
 
-# --- Outputs ---
+# --- Outputs (generated) ---
 outputs/
-*.png
-*.jpg
-*.jpeg
-*.webp
-*.mp4
 
 # --- Logs ---
 *.log

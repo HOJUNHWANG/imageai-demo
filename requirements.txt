@@ -1,18 +1,20 @@
-##pip uninstall -y gradio gradio-client huggingface-hub diffusers transformers torch torchvision torchaudio numpy
-
-
 gradio>=4.0.0
+
 torch
 torchvision
+
 diffusers>=0.30.0
 transformers
 accelerate
-opencv-python
-pillow
-numpy
-segment-anything
-torchvision
+
 timm
-torchvision
-mediapipe
+numpy
+pillow
 psutil
+mediapipe
+
+# Optional (recommended)
+opencv-python
+
+# NOTE: Segment Anything (SAM) is recommended to install via git:
+#   pip install git+https://github.com/facebookresearch/segment-anything.git
