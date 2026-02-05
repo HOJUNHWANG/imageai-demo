@@ -1,0 +1,47 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.pyd
+*.so
+*.dll
+*.dylib
+*.egg-info/
+dist/
+build/
+
+# --- Virtual env ---
+.venv/
+venv/
+venv311/
+env/
+ENV/
+
+# --- OS / IDE ---
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# --- Model weights / artifacts ---
+weights/
+*.pth
+*.safetensors
+*.ckpt
+*.onnx
+
+models/
+*.pht
+*.safetensors
+*.ckpt
+*.onnx
+
+# --- Outputs ---
+outputs/
+*.png
+*.jpg
+*.jpeg
+*.webp
+*.mp4
+
+# --- Logs ---
+*.log
