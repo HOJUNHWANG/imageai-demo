@@ -72,6 +72,11 @@ python app.py
 - `PUBLIC_CONCURRENCY=1` (기본값)
 - `MOCK_INPAINT=1`: 모델 실행 없이 UI/파이프라인만 빠르게 테스트
 
+### VRAM 안정화(두 번 연속 실행 문제 대응)
+- `LOW_VRAM=1`: attention/vae slicing/tiling 활성화(조금 느려지지만 안정적)
+- `CPU_OFFLOAD=1`: diffusers CPU offload(더 안정적, 느릴 수 있음)
+- `AUTO_UNLOAD_AUX=1`: 실행 후 ControlNet/Refine 파이프라인 자동 언로드(연속 실행 안정화)
+
 `.env.example`을 참고해 `.env`를 만들 수 있습니다. **토큰/키는 절대 커밋하지 마세요.**
 
 ## 알려진 이슈/주의

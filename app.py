@@ -86,6 +86,14 @@ PUBLIC_MAX_STEPS = int(os.getenv("PUBLIC_MAX_STEPS", "22"))
 PUBLIC_MAX_QUEUE = int(os.getenv("PUBLIC_MAX_QUEUE", "10"))
 PUBLIC_CONCURRENCY = int(os.getenv("PUBLIC_CONCURRENCY", "1"))
 
+# VRAM stability toggles
+# - LOW_VRAM enables VAE slicing/tiling + attention slicing (slower, more stable)
+# - CPU_OFFLOAD enables diffusers model CPU offload (more stable, may be slower)
+# - AUTO_UNLOAD_AUX unloads ControlNet/Refine pipelines after each run (frees VRAM)
+LOW_VRAM = os.getenv("LOW_VRAM", "1" if PUBLIC_DEMO else "0") == "1"
+CPU_OFFLOAD = os.getenv("CPU_OFFLOAD", "0") == "1"
+AUTO_UNLOAD_AUX = os.getenv("AUTO_UNLOAD_AUX", "1" if PUBLIC_DEMO else "0") == "1"
+
 # Public demo mode choices only
 
 def get_edit_mode_choices():
@@ -169,6 +177,39 @@ def soft_clear_vram():
         except Exception as e:
             msg = f"[VRAM][SOFT] failed: {type(e).__name__}: {e}"
     return msg, get_vram_text()
+
+def unload_aux_pipelines():
+    """Unload optional pipelines (ControlNet + Refine) to recover VRAM."""
+    global controlnet_pipes, img2img_pipe
+
+    # ControlNet pipelines
+    if isinstance(controlnet_pipes, dict) and controlnet_pipes:
+        for k, p in list(controlnet_pipes.items()):
+            try:
+                if p is not None and hasattr(p, "to"):
+                    p.to("cpu")
+            except Exception:
+                pass
+        controlnet_pipes.clear()
+
+    # Refine pipeline
+    if img2img_pipe is not None:
+        try:
+            if hasattr(img2img_pipe, "to"):
+                img2img_pipe.to("cpu")
+        except Exception:
+            pass
+        img2img_pipe = None
+
+    gc.collect()
+    if DEVICE == "cuda" and torch.cuda.is_available():
+        try:
+            torch.cuda.empty_cache()
+            torch.cuda.ipc_collect()
+            torch.cuda.synchronize()
+        except Exception:
+            pass
+
 
 def hard_clear_vram():
     """
@@ -372,10 +413,33 @@ def load_pipe():
 
         if DEVICE == "cuda":
             p.to("cuda")
-            if hasattr(p, "disable_model_cpu_offload"):
-                p.disable_model_cpu_offload()
-            print("[GPU] Disabled cpu_offload - full GPU acceleration enabled")
 
+            # Offload vs full-GPU
+            if CPU_OFFLOAD and hasattr(p, "enable_model_cpu_offload"):
+                p.enable_model_cpu_offload()
+                print("[GPU] CPU_OFFLOAD enabled (more stable, may be slower)")
+            else:
+                if hasattr(p, "disable_model_cpu_offload"):
+                    p.disable_model_cpu_offload()
+                print("[GPU] Full GPU mode (cpu_offload disabled)")
+
+            # Low VRAM helpers
+            if LOW_VRAM:
+                try:
+                    p.enable_attention_slicing("auto")
+                except Exception:
+                    pass
+                try:
+                    p.enable_vae_slicing()
+                except Exception:
+                    pass
+                try:
+                    p.enable_vae_tiling()
+                except Exception:
+                    pass
+                print("[OPT] LOW_VRAM enabled (attention/vae slicing/tiling)")
+
+            # Optional: xformers
             try:
                 p.enable_xformers_memory_efficient_attention()
                 print("[OPT] xformers enabled - faster attention")
@@ -706,12 +770,33 @@ def apply_inpaint(
                 num_inference_steps=steps,
                 strength=strength,
                 guidance_scale=guidance,
-                generator=gen
+                generator=gen,
             ).images[0]
             print("[INPAINT] Generation success!")
         except Exception as e:
-            print(f"[INPAINT] Base generation failed: {str(e)}")
-            return None, f"Generation failed: {str(e)}", positive_final, "Error", used_seed_str
+            err = str(e)
+            print(f"[INPAINT] Base generation failed: {err}")
+
+            # Best-effort OOM recovery for consecutive runs
+            if "out of memory" in err.lower() or "cuda" in err.lower() and "memory" in err.lower():
+                print("[OOM] Attempting recovery: unload aux + hard clear")
+                try:
+                    unload_aux_pipelines()
+                except Exception:
+                    pass
+                try:
+                    hard_clear_vram()
+                except Exception:
+                    pass
+                return (
+                    None,
+                    "CUDA OOM: VRAM 부족으로 실패했습니다. Hard Clear를 수행했습니다. 해상도/steps를 낮추거나 LOW_VRAM=1, CPU_OFFLOAD=1을 시도해보세요.",
+                    positive_final,
+                    "Error: CUDA OOM (recovered)",
+                    used_seed_str,
+                )
+
+            return None, f"Generation failed: {err}", positive_final, "Error", used_seed_str
         mark("base_run_end")
 
     # Refine pass
@@ -773,10 +858,18 @@ def apply_inpaint(
     run_msg = f"완료! {model_info} | Time: {int(dt // 60)}m {int(dt % 60)}s"
     global_status = f"{run_msg}\n{prof_msg}"
 
-    # (기본) 생성 후 Soft Clear는 유지
+    # Post-run VRAM housekeeping
+    if AUTO_UNLOAD_AUX:
+        unload_aux_pipelines()
+        print("[VRAM] AUTO_UNLOAD_AUX: unloaded ControlNet/Refine pipelines")
+
     if DEVICE == "cuda" and torch.cuda.is_available():
-        torch.cuda.empty_cache()
-        torch.cuda.synchronize()
+        try:
+            torch.cuda.empty_cache()
+            torch.cuda.ipc_collect()
+            torch.cuda.synchronize()
+        except Exception:
+            pass
         print("[VRAM] Cleared cache after generation")
 
     # seed 기록
