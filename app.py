@@ -1,8 +1,14 @@
 # venv311\Scripts\activate
 # app.py
 import os
-os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
-os.environ["CUDA_LAUNCH_BLOCKING"] = "1"  # 에러 자세히 보기
+
+# Memory behavior (can help reduce fragmentation/OOM on long-running sessions)
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+
+# Debug only: enables more precise CUDA stack traces but slows down inference.
+# Turn on explicitly when debugging CUDA issues.
+if os.getenv("DEBUG_CUDA", "0") == "1":
+    os.environ.setdefault("CUDA_LAUNCH_BLOCKING", "1")
 
 import time
 import gc
@@ -415,11 +421,27 @@ def load_pipe():
 
 PIPE = load_pipe()
 
+def _boot_warnings():
+    # MediaPipe Tasks model (optional)
+    mp_model = os.path.join(WEIGHTS_DIR, "selfie_multiclass_256x256.tflite")
+    if not os.path.exists(mp_model):
+        print(f"[BOOT][WARN] MediaPipe model missing: {mp_model}")
+        print("[BOOT][WARN] Auto-mask (MediaPipe) will be unavailable until you add it.")
+
+    # SAM weights (optional)
+    sam_b = os.path.join(WEIGHTS_DIR, "sam_vit_b_01ec64.pth")
+    sam_h = os.path.join(WEIGHTS_DIR, "sam_vit_h_4b8939.pth")
+    if not os.path.exists(sam_b) and not os.path.exists(sam_h):
+        print(f"[BOOT][WARN] SAM weights not found under: {WEIGHTS_DIR}")
+        print("[BOOT][WARN] Manual click-to-mask (SAM) will fail until weights are added.")
+
+_boot_warnings()
+
 mp_helper = None
 try:
     mp_helper = MPTasksHelper(weights_dir=WEIGHTS_DIR)
 except Exception as e:
-    print(f"[BOOT] MP init failed: {e}")
+    print(f"[BOOT][WARN] MediaPipe init failed: {e}")
 
 sam_manager = SamMaskerManager(weights_dir=WEIGHTS_DIR, device=DEVICE)
 
