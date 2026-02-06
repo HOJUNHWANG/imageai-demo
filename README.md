@@ -56,6 +56,13 @@ python app.py
 ```
 브라우저에서 열기: http://127.0.0.1:7860
 
+### UI만 빠르게 확인하기 (모델 없이)
+```bash
+# Windows cmd/powershell 환경변수 예시
+set MOCK_INPAINT=1
+python app.py
+```
+
 ## Public demo 설정 (환경변수)
 코드에 실제로 존재하는 플래그 기준:
 - `PUBLIC_DEMO=1` (기본값): 공개 데모 가드레일 ON
