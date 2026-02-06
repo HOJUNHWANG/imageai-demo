@@ -86,13 +86,17 @@ PUBLIC_MAX_STEPS = int(os.getenv("PUBLIC_MAX_STEPS", "22"))
 PUBLIC_MAX_QUEUE = int(os.getenv("PUBLIC_MAX_QUEUE", "10"))
 PUBLIC_CONCURRENCY = int(os.getenv("PUBLIC_CONCURRENCY", "1"))
 
-# VRAM stability toggles
+# VRAM/RAM stability toggles
 # - LOW_VRAM enables VAE slicing/tiling + attention slicing (slower, more stable)
 # - CPU_OFFLOAD enables diffusers model CPU offload (more stable, may be slower)
 # - AUTO_UNLOAD_AUX unloads ControlNet/Refine pipelines after each run (frees VRAM)
 LOW_VRAM = os.getenv("LOW_VRAM", "1" if PUBLIC_DEMO else "0") == "1"
 CPU_OFFLOAD = os.getenv("CPU_OFFLOAD", "0") == "1"
 AUTO_UNLOAD_AUX = os.getenv("AUTO_UNLOAD_AUX", "1" if PUBLIC_DEMO else "0") == "1"
+
+# Extra stability knobs
+WARMUP = os.getenv("WARMUP", "0" if PUBLIC_DEMO else "1") == "1"
+AUTO_HARD_CLEAR_THRESHOLD = float(os.getenv("AUTO_HARD_CLEAR_THRESHOLD", "0.92"))
 
 # Public demo mode choices only
 
@@ -449,22 +453,25 @@ def load_pipe():
             p.to("cpu")
             print("[CPU] Running on CPU - generation will be slow")
 
-        # Warm-up (너무 공격적이면 여기만 꺼도 됨)
-        print("[PIPE] Running warm-up dummy inference...")
-        try:
-            dummy_image = Image.new("RGB", (512, 512), color="white")
-            dummy_mask = Image.new("L", (512, 512), color=0)
-            _ = p(
-                prompt="a photo of a cat",
-                image=dummy_image,
-                mask_image=dummy_mask,
-                num_inference_steps=1,
-                strength=0.01,
-                guidance_scale=1.0
-            ).images[0]
-            print("[PIPE] Warm-up success! GPU/VRAM ready")
-        except Exception as warm_up_e:
-            print(f"[PIPE] Warm-up failed (non-fatal): {str(warm_up_e)}")
+        # Warm-up (optional)
+        if WARMUP:
+            print("[PIPE] Running warm-up dummy inference...")
+            try:
+                dummy_image = Image.new("RGB", (512, 512), color="white")
+                dummy_mask = Image.new("L", (512, 512), color=0)
+                _ = p(
+                    prompt="a photo of a cat",
+                    image=dummy_image,
+                    mask_image=dummy_mask,
+                    num_inference_steps=1,
+                    strength=0.01,
+                    guidance_scale=1.0,
+                ).images[0]
+                print("[PIPE] Warm-up success! GPU/VRAM ready")
+            except Exception as warm_up_e:
+                print(f"[PIPE] Warm-up failed (non-fatal): {str(warm_up_e)}")
+        else:
+            print("[PIPE] Warm-up disabled (WARMUP=0)")
 
         pipe = p
         PIPE = p
@@ -517,18 +524,24 @@ def on_upload(img: Image.Image, working_long_side: int):
     if img is None:
         return None, None, "Upload an image first.", "Error: No image uploaded."
 
+    # Keep memory stable: store only the resized working image by default.
+    # (The original full-resolution image can be very large and can push RAM over the limit.)
     orig = img.convert("RGB")
     target_long = int(working_long_side)
     if PUBLIC_DEMO:
         target_long = min(target_long, PUBLIC_MAX_LONG_SIDE)
     working = resize_to_long_side(orig, target_long)
 
-    STATE["orig_pil"] = orig
+    STATE["orig_pil"] = None
     STATE["working_pil"] = working
     STATE["working_np"] = to_rgb_np(working)
     STATE["mask_u8"] = None
     STATE["selected_mask"] = None
     STATE["auto_mask_candidates"] = []
+
+    # release refs
+    del orig
+    gc.collect()
 
     status_msg = "Image loaded. Choose Auto Mask or click for Manual Mask."
     return working, None, status_msg, status_msg
@@ -879,6 +892,19 @@ def apply_inpaint(
     except Exception:
         pass
 
+    # Auto hard clear if memory pressure is extreme (helps consecutive runs)
+    if DEVICE == "cuda" and torch.cuda.is_available():
+        try:
+            dev = torch.cuda.current_device()
+            resv = torch.cuda.memory_reserved(dev)
+            total = torch.cuda.get_device_properties(dev).total_memory
+            ratio = float(resv) / float(total) if total else 0.0
+            if ratio >= AUTO_HARD_CLEAR_THRESHOLD:
+                print(f"[VRAM][AUTO] reserved/total={ratio:.2f} >= {AUTO_HARD_CLEAR_THRESHOLD:.2f} → hard clear")
+                hard_clear_vram()
+        except Exception:
+            pass
+
     return final_image, run_msg, positive_final, global_status, used_seed_str
 
 # -----------------------------------------------------------------------------
@@ -897,7 +923,25 @@ CSS = """
 
 def build_ui():
     with gr.Blocks(title="ImageAI Inpaint Lab") as demo:
-        gr.Markdown("## ImageAI Inpaint Lab (Juggernaut XL + ControlNet)")
+        gr.Markdown("## ImageAI Demo (SDXL Inpaint)")
+
+        with gr.Accordion("Help / Quick Guide", open=True):
+            gr.Markdown(
+                """
+1) **Upload** an image
+2) Make a **Mask**
+   - Auto Mask: click **Auto Mask (v5)** (requires MediaPipe model)
+   - Manual Mask: click on the image (requires SAM weights)
+3) Write **Positive / Negative** prompts (Auto-enrich on by default)
+4) (Optional) enable **ControlNet** or **Refine** (may use more VRAM)
+5) Click **Apply**
+
+If you hit **memory errors** on the 2nd run:
+- Lower **Working Long Side** / **Steps**
+- Click **Unload Aux** or **Hard Clear**
+- In `.env`: set `LOW_VRAM=1`, `AUTO_UNLOAD_AUX=1` (recommended)
+                """
+            )
 
         # 상단: Status + VRAM + 버튼들
         with gr.Row():
@@ -908,6 +952,7 @@ def build_ui():
                 with gr.Row():
                     btn_vram_refresh = gr.Button("VRAM Refresh")
                     btn_soft_clear = gr.Button("🧹 Soft Clear")
+                    btn_unload_aux = gr.Button("Unload Aux")
                     btn_hard_clear = gr.Button("🔥 Hard Clear")
 
         # (Public repo) Admin/private-mode unlock UI removed.
@@ -1009,6 +1054,7 @@ def build_ui():
         # VRAM buttons
         btn_vram_refresh.click(fn=lambda: (get_vram_text(),), inputs=None, outputs=[vram_box])
         btn_soft_clear.click(fn=soft_clear_vram, inputs=None, outputs=[global_status, vram_box])
+        btn_unload_aux.click(fn=lambda: (unload_aux_pipelines() or "[VRAM] Unloaded aux pipelines.", get_vram_text()), inputs=None, outputs=[global_status, vram_box])
         btn_hard_clear.click(fn=hard_clear_vram, inputs=None, outputs=[global_status, vram_box])
 
     return demo
