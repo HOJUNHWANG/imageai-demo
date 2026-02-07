@@ -452,16 +452,44 @@ def preview_enriched_prompt(prompt: str, negative: str, auto_enrich: bool, edit_
 
     fin = build_final_prompts(prompt, negative, auto_enrich, edit_mode)
 
-    warn = "\n".join([f"- {w}" for w in fin["warnings"]]) if fin["warnings"] else "(none)"
-    preview_text = (
-        f"Final Positive:\n{fin['prompt']}\n\n"
-        f"Final Positive 2:\n{fin['prompt_2'] or '(empty)'}\n\n"
-        f"Final Negative:\n{fin['negative']}\n\n"
-        f"Final Negative 2:\n{fin['negative_2'] or '(empty)'}\n\n"
-        f"Token counts (approx): pos={fin['tok_pos']} pos2={fin['tok_pos2']} | neg={fin['tok_neg']} neg2={fin['tok_neg2']}\n\n"
-        f"Warnings:\n{warn}"
-    )
-    return preview_text
+    warn = "\n".join([f"- {w}" for w in fin["warnings"]]) if fin["warnings"] else "- (none)"
+
+    preview_md = f"""### Prompt Check
+
+**Positive**
+
+```
+{fin['prompt']}
+```
+
+**Positive 2 (SDXL prompt_2)**
+
+```
+{fin['prompt_2'] or ''}
+```
+
+**Negative**
+
+```
+{fin['negative']}
+```
+
+**Negative 2 (SDXL negative_prompt_2)**
+
+```
+{fin['negative_2'] or ''}
+```
+
+**Token counts (approx)**
+- pos: {fin['tok_pos']}
+- pos2: {fin['tok_pos2']}
+- neg: {fin['tok_neg']}
+- neg2: {fin['tok_neg2']}
+
+**Warnings**
+{warn}
+"""
+    return preview_md
 
 def parse_prompt_simple(prompt: str) -> dict:
     p = (prompt or "").lower()
@@ -970,7 +998,18 @@ def apply_inpaint(
 
     model_info = f"Juggernaut XL | ControlNet: {use_controlnet} ({controlnet_type}) | Refine: {do_refine}"
     run_msg = f"완료! {model_info} | Time: {int(dt // 60)}m {int(dt % 60)}s"
-    global_status = f"{run_msg}\n{prof_msg}"
+
+    # Markdown-friendly status block
+    global_status = (
+        f"### Done\n"
+        f"- Mode: **{edit_mode}**\n"
+        f"- Steps: **{steps}** | Strength: **{strength:.2f}** | CFG: **{guidance:.1f}**\n"
+        f"- ControlNet: **{use_controlnet}** ({controlnet_type})\n"
+        f"- Refine: **{do_refine}**\n"
+        f"- Seed: **{used_seed_str}**\n\n"
+        f"**Timing**: {int(dt // 60)}m {int(dt % 60)}s\n"
+        f"**Profile**: `{prof_msg}`\n"
+    )
 
     # Post-run VRAM housekeeping
     if AUTO_UNLOAD_AUX:
@@ -1015,7 +1054,7 @@ def apply_inpaint(
 
     # Update VRAM text automatically (for convenience)
     try:
-        global_status = f"{global_status}\n\n[VRAM]\n{get_vram_text()}"
+        global_status = f"{global_status}\n\n### VRAM\n```\n{get_vram_text()}\n```"
     except Exception:
         pass
 
@@ -1152,7 +1191,7 @@ def build_ui():
         # Top bar: Status + VRAM + buttons
         with gr.Row():
             with gr.Column(scale=7):
-                global_status = gr.Textbox(label=t("en", "status"), value="Ready.", lines=4)
+                global_status = gr.Markdown(value="**Ready.**")
             with gr.Column(scale=5):
                 vram_box = gr.Textbox(label=t("en", "vram"), value=get_vram_text(), lines=7, interactive=False)
                 with gr.Row():
@@ -1194,7 +1233,7 @@ def build_ui():
                         prompt = gr.Textbox(lines=3, label=t("en", "pos"))
                         negative = gr.Textbox(lines=3, label=t("en", "neg"))
                         preview_btn = gr.Button(t("en", "prompt_check"), variant="secondary")
-                        preview_output = gr.Textbox(label=t("en", "prompt_check_label"), lines=10, interactive=False)
+                        preview_output = gr.Markdown(value="")
                         positive_final_preview = gr.Textbox(lines=3, interactive=False, label=t("en", "final_prompt"))
 
                     with gr.TabItem("Settings"):
