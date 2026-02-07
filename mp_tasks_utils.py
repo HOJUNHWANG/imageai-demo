@@ -75,13 +75,15 @@ def build_top_mask_v5_tasks(pil: Image.Image, helper: MPTasksHelper) -> np.ndarr
     h, w = person.shape[:2]
     mask = np.zeros((h, w), dtype=np.uint8)
 
-    y0 = int(0.28 * h)
-    y1 = int(0.85 * h)
-    x0 = int(0.18 * w)
-    x1 = int(0.82 * w)
+    # Conservative torso box (avoid hair/face).
+    y0 = int(0.32 * h)
+    y1 = int(0.86 * h)
+    x0 = int(0.20 * w)
+    x1 = int(0.80 * w)
     mask[y0:y1, x0:x1] = person[y0:y1, x0:x1]
 
-    head_y1 = int(0.26 * h)
+    # Hard cut head region to reduce accidental face masking
+    head_y1 = int(0.34 * h)
     mask[:head_y1, :] = 0
 
     k = max(5, int(0.008 * min(h, w)) // 2 * 2 + 1)

@@ -420,6 +420,20 @@ def build_final_prompts(prompt: str, negative: str, auto_enrich: bool, edit_mode
     pos = (prompt or "").strip()
     neg = (negative or "").strip()
 
+    # If the user didn't type a prompt, don't fabricate one.
+    if not pos:
+        return {
+            "prompt": "",
+            "prompt_2": None,
+            "negative": neg,
+            "negative_2": None,
+            "tok_pos": 0,
+            "tok_pos2": 0,
+            "tok_neg": None,
+            "tok_neg2": None,
+            "warnings": ["Positive prompt is empty."],
+        }
+
     if auto_enrich:
         try:
             pos, _ = enrich_positive(pos)
@@ -429,8 +443,11 @@ def build_final_prompts(prompt: str, negative: str, auto_enrich: bool, edit_mode
             neg = enrich_negative(neg)
         except Exception as e:
             print(f"[WARN] Negative enrich failed: {e}")
-
-    neg = comma_join_unique([neg, build_default_negative(edit_mode)])
+        # Only append default negatives in auto-enrich mode.
+        neg = comma_join_unique([neg, build_default_negative(edit_mode)])
+    else:
+        # Respect user negative prompt exactly when auto-enrich is off.
+        neg = normalize_space(neg)
 
     # SDXL 77-token handling
     pos1, pos2, pos_n1, pos_n2, pos_warn = _split_sdxl_prompt_overflow(pos, tok, 77)
@@ -453,7 +470,7 @@ def build_final_prompts(prompt: str, negative: str, auto_enrich: bool, edit_mode
 
 def preview_enriched_prompt(prompt: str, negative: str, auto_enrich: bool, edit_mode: str):
     if not (prompt or "").strip():
-        return "Positive prompt is required!"
+        return "### Prompt Check\n\n- Positive prompt is required."
 
     fin = build_final_prompts(prompt, negative, auto_enrich, edit_mode)
 
@@ -726,7 +743,7 @@ def build_auto_candidates_v5(prompt: str, auto_enrich: bool, edit_mode: str, aut
     t0 = time.time()
 
     user_prompt = normalize_space(prompt)
-    auto_enrich_flag = bool(auto_enrich)
+    auto_enrich_flag = bool(auto_enrich) and bool(user_prompt)
 
     if STATE.get("working_pil") is None or STATE.get("working_np") is None:
         return [], "Upload an image first.", ""
@@ -1338,11 +1355,6 @@ def build_ui():
                     gr.Markdown(f"### {t('en','working')}")
                     input_image = gr.Image(type="pil", height=420)
 
-                with gr.Group():
-                    gr.Markdown(f"### {t('en','mask')}")
-                    mask_overlay = gr.Image(type="numpy", height=220)
-                    selected_mask_preview = gr.Image(type="numpy", height=300)
-
             with gr.Column(scale=5):
                 with gr.Tabs():
                     with gr.TabItem("Mask"):
@@ -1358,6 +1370,12 @@ def build_ui():
                         with gr.Row():
                             btn_use_manual = gr.Button("Use Manual")
                             btn_use_auto = gr.Button("Use Auto")
+
+                        with gr.Group():
+                            gr.Markdown(f"### {t('en','mask')}")
+                            mask_overlay = gr.Image(type="numpy", height=220)
+                            selected_mask_preview = gr.Image(type="numpy", height=300)
+
 
                     with gr.TabItem("Prompt"):
                         auto_enrich = gr.Checkbox(value=True, label=t("en", "auto_enrich"))
@@ -1397,7 +1415,7 @@ def build_ui():
         input_image.select(fn=on_manual_click, inputs=[sam_model], outputs=[mask_overlay, selected_mask_preview, auto_status, global_status])
         input_image.select(fn=lambda: (_mask_source_text(),), inputs=None, outputs=[active_mask_md])
 
-        btn_auto.click(fn=build_auto_candidates_v5, inputs=[prompt, auto_enrich, edit_mode, auto_target], outputs=[auto_gallery, auto_status, positive_final_preview])
+        btn_auto.click(fn=build_auto_candidates_v5, inputs=[prompt, auto_enrich, edit_mode, auto_target], outputs=[auto_gallery, auto_status])
         btn_auto.click(fn=use_auto_mask, inputs=None, outputs=[active_mask_md, mask_overlay, selected_mask_preview])
         btn_clear.click(fn=clear_mask, outputs=[mask_overlay, selected_mask_preview, auto_gallery, auto_status])
         btn_clear.click(fn=lambda: (_mask_source_text(),), inputs=None, outputs=[active_mask_md])
