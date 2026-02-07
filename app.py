@@ -1469,8 +1469,12 @@ This is a **local SDXL inpainting demo** (portfolio-friendly).
             except Exception:
                 pass
         # VRAM buttons
+        def _vram_refresh_ui():
+            _notify("VRAM refreshed.")
+            return get_vram_text()
+
         btn_vram_refresh.click(
-            fn=lambda: (_notify('VRAM refreshed.'), get_vram_text())[1:],
+            fn=_vram_refresh_ui,
             inputs=None,
             outputs=[vram_box],
         )
