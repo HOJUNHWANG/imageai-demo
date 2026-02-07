@@ -1029,110 +1029,190 @@ CSS = """
 # (Public repo) Admin unlock helpers removed.
 
 def build_ui():
-    with gr.Blocks(title="ImageAI Inpaint Lab") as demo:
-        gr.Markdown("## ImageAI Demo (SDXL Inpaint)")
+    TEXT = {
+        "en": {
+            "title": "## ImageAI Demo (SDXL Inpaint)",
+            "help_title": "Help / Quick Guide",
+            "help": (
+                "1) **Upload** an image\n"
+                "2) Make a **Mask**\n"
+                "   - Auto Mask: click **Auto Mask (v5)** (requires MediaPipe model)\n"
+                "   - Manual Mask: click on the image (requires SAM weights)\n"
+                "3) Write **Positive / Negative** prompts\n"
+                "4) (Optional) enable **ControlNet** or **Refine** (uses more VRAM)\n"
+                "5) Click **Apply**\n\n"
+                "If the 2nd run fails with memory errors:\n"
+                "- Lower **Working Long Side** / **Steps**\n"
+                "- Click **Unload Aux** (recommended) or **Hard Clear**\n"
+                "- In `.env`: `LOW_VRAM=1`, `AUTO_UNLOAD_AUX=1`\n"
+            ),
+            "lang": "Language",
+            "status": "Status / Logs",
+            "vram": "GPU VRAM",
+            "result": "Result",
+            "run_status": "Run status",
+            "working": "Working",
+            "mask": "Mask (selected)",
+            "auto_mask": "Auto Mask",
+            "prompt": "Prompt",
+            "settings": "Settings",
+            "auto_enrich": "Auto-enrich prompt",
+            "pos": "Positive Prompt",
+            "neg": "Negative Prompt",
+            "prompt_check": "Prompt Check",
+            "prompt_check_label": "Prompt Check (final prompts + token counts)",
+            "final_prompt": "Final prompt (applied)",
+            "apply": "Apply",
+            "clear_mask": "Clear Mask",
+            "auto_mask_btn": "Auto Mask (v5)",
+            "working_long": "Working Long Side (px)",
+            "sam": "SAM Model (Manual Mask)",
+            "mask_expand": "Mask Expand (px)",
+            "mask_blur": "Mask Blur (px)",
+            "steps": "Inference Steps",
+            "strength": "Strength",
+            "guidance": "Guidance Scale (CFG)",
+            "seed": "Seed (-1 = random)",
+            "used_seed": "Used Seed",
+            "use_cn": "ControlNet",
+            "cn_type": "Type",
+            "refine": "Refine Pass",
+        },
+        "kr": {
+            "title": "## ImageAI 데모 (SDXL 인페인트)",
+            "help_title": "도움말 / 빠른 가이드",
+            "help": (
+                "1) 이미지 **업로드**\n"
+                "2) **마스크** 만들기\n"
+                "   - Auto Mask(v5): MediaPipe 모델 필요\n"
+                "   - Manual Mask: 이미지 클릭(SAM weights 필요)\n"
+                "3) **Positive/Negative** 프롬프트 입력\n"
+                "4) (선택) **ControlNet / Refine** (VRAM 추가 사용)\n"
+                "5) **Apply** 클릭\n\n"
+                "두 번째 실행에서 메모리 에러가 나면:\n"
+                "- Working Long Side / Steps 낮추기\n"
+                "- **Unload Aux** 또는 **Hard Clear**\n"
+                "- `.env`: `LOW_VRAM=1`, `AUTO_UNLOAD_AUX=1`\n"
+            ),
+            "lang": "언어",
+            "status": "상태 / 로그",
+            "vram": "GPU VRAM",
+            "result": "결과",
+            "run_status": "실행 상태",
+            "working": "작업 이미지",
+            "mask": "마스크(선택)",
+            "auto_mask": "자동 마스크",
+            "prompt": "프롬프트",
+            "settings": "설정",
+            "auto_enrich": "프롬프트 자동 확장",
+            "pos": "Positive Prompt",
+            "neg": "Negative Prompt",
+            "prompt_check": "프롬프트 체크",
+            "prompt_check_label": "프롬프트 체크(최종 prompt/prompt_2 + 토큰 수)",
+            "final_prompt": "최종 prompt(적용됨)",
+            "apply": "적용(Apply)",
+            "clear_mask": "마스크 지우기",
+            "auto_mask_btn": "Auto Mask (v5)",
+            "working_long": "작업 해상도(긴 변 px)",
+            "sam": "SAM 모델(수동 마스크)",
+            "mask_expand": "마스크 확장(px)",
+            "mask_blur": "마스크 블러(px)",
+            "steps": "스텝(steps)",
+            "strength": "강도(strength)",
+            "guidance": "CFG(guidance)",
+            "seed": "시드(-1 랜덤)",
+            "used_seed": "사용된 시드",
+            "use_cn": "ControlNet",
+            "cn_type": "타입",
+            "refine": "리파인(Refine)",
+        },
+    }
 
-        with gr.Accordion("Help / Quick Guide", open=True):
-            gr.Markdown(
-                """
-1) **Upload** an image
-2) Make a **Mask**
-   - Auto Mask: click **Auto Mask (v5)** (requires MediaPipe model)
-   - Manual Mask: click on the image (requires SAM weights)
-3) Write **Positive / Negative** prompts (Auto-enrich on by default)
-4) (Optional) enable **ControlNet** or **Refine** (may use more VRAM)
-5) Click **Apply**
+    def t(lang: str, k: str) -> str:
+        lang = lang if lang in TEXT else "en"
+        return TEXT[lang].get(k, TEXT["en"].get(k, k))
 
-If you hit **memory errors** on the 2nd run:
-- Lower **Working Long Side** / **Steps**
-- Click **Unload Aux** or **Hard Clear**
-- In `.env`: set `LOW_VRAM=1`, `AUTO_UNLOAD_AUX=1` (recommended)
-                """
-            )
+    def render_help(lang: str):
+        return t(lang, "help")
 
-        # 상단: Status + VRAM + 버튼들
+    with gr.Blocks(title="ImageAI Demo") as demo:
+        lang = gr.Dropdown(["en", "kr"], value="en", label="Language")
+        title_md = gr.Markdown(t("en", "title"))
+
+        with gr.Accordion(t("en", "help_title"), open=True):
+            help_md = gr.Markdown(render_help("en"))
+
+        # Top bar: Status + VRAM + buttons
         with gr.Row():
             with gr.Column(scale=7):
-                global_status = gr.Textbox(label="Status / Logs", value="Ready.", lines=3)
+                global_status = gr.Textbox(label=t("en", "status"), value="Ready.", lines=4)
             with gr.Column(scale=5):
-                vram_box = gr.Textbox(label="GPU VRAM", value=get_vram_text(), lines=7, interactive=False)
+                vram_box = gr.Textbox(label=t("en", "vram"), value=get_vram_text(), lines=7, interactive=False)
                 with gr.Row():
                     btn_vram_refresh = gr.Button("VRAM Refresh")
                     btn_soft_clear = gr.Button("🧹 Soft Clear")
                     btn_unload_aux = gr.Button("Unload Aux")
                     btn_hard_clear = gr.Button("🔥 Hard Clear")
 
-        # (Public repo) Admin/private-mode unlock UI removed.
-
+        # Main layout: Result on top-left, Tabs on right
         with gr.Row():
             with gr.Column(scale=7):
                 with gr.Group():
-                    gr.Markdown("Working")
-                    input_image = gr.Image(type="pil", height=520)
+                    gr.Markdown(f"### {t('en','result')}")
+                    output = gr.Image(height=520)
+                    run_status = gr.Textbox(lines=2, label=t("en", "run_status"))
 
                 with gr.Group():
-                    gr.Markdown("Mask (selected)")
-                    mask_overlay = gr.Image(type="numpy", height=260)
-                    selected_mask_preview = gr.Image(type="numpy", height=420)
+                    gr.Markdown(f"### {t('en','working')}")
+                    input_image = gr.Image(type="pil", height=420)
+
+                with gr.Group():
+                    gr.Markdown(f"### {t('en','mask')}")
+                    mask_overlay = gr.Image(type="numpy", height=220)
+                    selected_mask_preview = gr.Image(type="numpy", height=300)
 
             with gr.Column(scale=5):
-                with gr.Group():
-                    gr.Markdown("Auto Mask")
-                    auto_gallery = gr.Gallery(columns=4, height=420)
-                    auto_status = gr.Textbox(lines=2)
-                    with gr.Row():
-                        btn_auto = gr.Button("Auto Mask (v5)")
-                        btn_clear = gr.Button("Clear Mask")
+                with gr.Tabs():
+                    with gr.TabItem("Mask"):
+                        gr.Markdown(f"### {t('en','auto_mask')}")
+                        auto_gallery = gr.Gallery(columns=4, height=320)
+                        auto_status = gr.Textbox(lines=2)
+                        with gr.Row():
+                            btn_auto = gr.Button(t("en", "auto_mask_btn"))
+                            btn_clear = gr.Button(t("en", "clear_mask"))
 
-                with gr.Group():
-                    gr.Markdown("Prompt")
-                    auto_enrich = gr.Checkbox(value=True, label="Auto-enrich prompt")
-                    edit_mode = gr.Dropdown(
-                        choices=get_edit_mode_choices(),
-                        value="Wear / Change Clothes"
-                    )
-                    prompt = gr.Textbox(lines=3, label="Positive Prompt")
-                    negative = gr.Textbox(lines=3, label="Negative Prompt")
-                    with gr.Row():
-                        preview_btn = gr.Button("Prompt Check", variant="secondary")
-                        preview_output = gr.Textbox(
-                            label="Prompt Check (final prompts + token counts)",
-                            lines=10,
-                            interactive=False,
-                            placeholder="Click to see the exact prompts that will be applied"
-                        )
-                    positive_final_preview = gr.Textbox(lines=5, interactive=False, label="Final prompt (applied)")
+                    with gr.TabItem("Prompt"):
+                        auto_enrich = gr.Checkbox(value=True, label=t("en", "auto_enrich"))
+                        edit_mode = gr.Dropdown(choices=get_edit_mode_choices(), value="Wear / Change Clothes")
+                        prompt = gr.Textbox(lines=3, label=t("en", "pos"))
+                        negative = gr.Textbox(lines=3, label=t("en", "neg"))
+                        preview_btn = gr.Button(t("en", "prompt_check"), variant="secondary")
+                        preview_output = gr.Textbox(label=t("en", "prompt_check_label"), lines=10, interactive=False)
+                        positive_final_preview = gr.Textbox(lines=3, interactive=False, label=t("en", "final_prompt"))
 
-                with gr.Group():
-                    gr.Markdown("Controls")
-                    if PUBLIC_DEMO:
-                        working_long_side = gr.Slider(512, PUBLIC_MAX_LONG_SIDE, value=min(896, PUBLIC_MAX_LONG_SIDE), step=64, label="Working Long Side (px)")
-                    else:
-                        working_long_side = gr.Slider(512, 1536, value=1024, step=64, label="Working Long Side (px)")
-                    sam_model = gr.Dropdown(["vit_b", "vit_h"], value="vit_b", label="SAM Model (Manual Mask)")
-                    mask_expand = gr.Slider(0, 40, value=10, label="Mask Expand (px) - blending 범위")
-                    mask_blur = gr.Slider(0, 40, value=18, label="Mask Blur (px) - 부드러운 경계")
-                    if PUBLIC_DEMO:
-                        steps = gr.Slider(10, PUBLIC_MAX_STEPS, value=min(18, PUBLIC_MAX_STEPS), label="Inference Steps")
-                    else:
-                        steps = gr.Slider(10, 60, value=28, label="Inference Steps")
-                    strength = gr.Slider(0.3, 0.95, value=0.55, label="Strength (변경 강도)")
-                    guidance = gr.Slider(1.0, 12.0, value=7.0, label="Guidance Scale (CFG) - 프롬프트 준수도")
-                    seed = gr.Number(value=-1, label="Seed (-1 = random)")
-                    seed_display = gr.Textbox(
-                        label="Used Seed (생성 후 표시)",
-                        interactive=False,
-                        placeholder="생성 후 seed 값이 여기에 표시됩니다"
-                    )
-                    use_controlnet = gr.Checkbox(label="Use ControlNet", value=False)
-                    controlnet_type = gr.Dropdown(["depth", "openpose", "inpaint"], value="depth", label="ControlNet Type")
-                    do_refine = gr.Checkbox(label="Refine Pass", value=False, interactive=True)
-                    btn_apply = gr.Button("Apply", variant="primary")
+                    with gr.TabItem("Settings"):
+                        # Performance + VRAM settings are always visible in public
+                        if PUBLIC_DEMO:
+                            working_long_side = gr.Slider(512, PUBLIC_MAX_LONG_SIDE, value=min(896, PUBLIC_MAX_LONG_SIDE), step=64, label=t("en", "working_long"))
+                            steps = gr.Slider(10, PUBLIC_MAX_STEPS, value=min(18, PUBLIC_MAX_STEPS), label=t("en", "steps"))
+                        else:
+                            working_long_side = gr.Slider(512, 1536, value=1024, step=64, label=t("en", "working_long"))
+                            steps = gr.Slider(10, 60, value=28, label=t("en", "steps"))
 
-                with gr.Group():
-                    gr.Markdown("Result")
-                    output = gr.Image(height=520)
-                    run_status = gr.Textbox(lines=2)
+                        sam_model = gr.Dropdown(["vit_b", "vit_h"], value="vit_b", label=t("en", "sam"))
+                        mask_expand = gr.Slider(0, 40, value=10, label=t("en", "mask_expand"))
+                        mask_blur = gr.Slider(0, 40, value=18, label=t("en", "mask_blur"))
+                        strength = gr.Slider(0.3, 0.95, value=0.55, label=t("en", "strength"))
+                        guidance = gr.Slider(1.0, 12.0, value=7.0, label=t("en", "guidance"))
+                        seed = gr.Number(value=-1, label=t("en", "seed"))
+                        seed_display = gr.Textbox(label=t("en", "used_seed"), interactive=False)
+
+                        with gr.Row():
+                            use_controlnet = gr.Checkbox(label=t("en", "use_cn"), value=False)
+                            controlnet_type = gr.Dropdown(["depth", "openpose", "inpaint"], value="depth", label=t("en", "cn_type"))
+
+                        do_refine = gr.Checkbox(label=t("en", "refine"), value=False, interactive=True)
+                        btn_apply = gr.Button(t("en", "apply"), variant="primary")
 
         # Events
         input_image.upload(fn=on_upload, inputs=[input_image, working_long_side], outputs=[input_image, selected_mask_preview, auto_status, global_status])
@@ -1141,11 +1221,7 @@ If you hit **memory errors** on the 2nd run:
         btn_auto.click(fn=build_auto_candidates_v5, inputs=[prompt, auto_enrich, edit_mode], outputs=[auto_gallery, auto_status, positive_final_preview])
         btn_clear.click(fn=clear_mask, outputs=[mask_overlay, selected_mask_preview, auto_gallery, auto_status])
 
-        preview_btn.click(
-            fn=preview_enriched_prompt,
-            inputs=[prompt, negative, auto_enrich, edit_mode],
-            outputs=[preview_output]
-        )
+        preview_btn.click(fn=preview_enriched_prompt, inputs=[prompt, negative, auto_enrich, edit_mode], outputs=[preview_output])
 
         btn_apply.click(
             fn=apply_inpaint,
@@ -1155,10 +1231,8 @@ If you hit **memory errors** on the 2nd run:
                 use_controlnet, controlnet_type,
                 do_refine,
             ],
-            outputs=[output, run_status, positive_final_preview, global_status, seed_display]
+            outputs=[output, run_status, positive_final_preview, global_status, seed_display],
         )
-
-        # Keep VRAM box in sync after Apply
         btn_apply.click(fn=lambda: (get_vram_text(),), inputs=None, outputs=[vram_box])
 
         # VRAM buttons
@@ -1166,6 +1240,15 @@ If you hit **memory errors** on the 2nd run:
         btn_soft_clear.click(fn=soft_clear_vram, inputs=None, outputs=[global_status, vram_box])
         btn_unload_aux.click(fn=lambda: (unload_aux_pipelines() or "[VRAM] Unloaded aux pipelines.", get_vram_text()), inputs=None, outputs=[global_status, vram_box])
         btn_hard_clear.click(fn=hard_clear_vram, inputs=None, outputs=[global_status, vram_box])
+
+        # Language switching (best-effort: update help/title; some labels are static)
+        def _on_lang_change(l):
+            return (
+                t(l, "title"),
+                render_help(l),
+            )
+
+        lang.change(fn=_on_lang_change, inputs=[lang], outputs=[title_md, help_md])
 
     return demo
 
