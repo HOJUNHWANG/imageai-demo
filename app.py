@@ -780,8 +780,16 @@ def apply_inpaint(
     t0 = time.time()
 
     used_seed_str = str(seed if seed is not None and int(seed) >= 0 else "random")
+    # Realtime stage indicator (Gradio streaming)
+    def _pack(stage_md: str, run_msg: str = '', final_prompt: str = ''):
+        # Keep the UI responsive by yielding intermediate tuples.
+        # outputs: [output, run_status, positive_final_preview, global_status, seed_display]
+        return None, run_msg, final_prompt, stage_md, used_seed_str
+
+    yield _pack('### Stage: Preparing inputs')
     if MOCK_INPAINT:
-        return None, "MOCK_INPAINT mode", "", "Mock mode active", used_seed_str
+        yield _pack("### Stage: MOCK_INPAINT", "MOCK_INPAINT mode")
+        return
 
     # Public demo guardrails are applied via UI + server-side clamps below.
 
@@ -796,7 +804,8 @@ def apply_inpaint(
         mask_u8 = STATE.get("selected_mask")
 
     if mask_u8 is None:
-        return None, "Mask missing", "", "Error: No mask selected", used_seed_str
+        yield _pack("### Stage: Error", "Mask missing")
+        return
 
     # 마스크 postprocess
     mask_pp = postprocess_mask(mask_u8, int(expand_px), int(blur_px))
@@ -812,6 +821,7 @@ def apply_inpaint(
     if fin["warnings"]:
         for w in fin["warnings"]:
             print(f"[PROMPT][WARN] {w}")
+    yield _pack("### Stage: Prompt ready", final_prompt=positive_final)
 
     # Mode-specific clamps can be added here if needed.
 
@@ -848,7 +858,7 @@ def apply_inpaint(
         key = f"{controlnet_type}"
 
         if key not in controlnet_pipes:
-            print(f"[CONTROLNET] Loading {controlnet_type} from: {repo}")
+            yield _pack(f"### Stage: Loading ControlNet ({controlnet_type})")
             mark("cn_load_start")
             try:
                 controlnet = ControlNetModel.from_pretrained(
@@ -873,6 +883,7 @@ def apply_inpaint(
         if use_controlnet and key in controlnet_pipes:
             p = controlnet_pipes[key]
             print(f"[CONTROLNET] Using {controlnet_type} | type={type(p).__name__}")
+            yield _pack(f"### Stage: Running ControlNet ({controlnet_type})")
             mark("cn_run_start")
             try:
                 result = p(
@@ -899,6 +910,7 @@ def apply_inpaint(
     if result is None:
         if pipe is None:
             load_pipe()
+        yield _pack("### Stage: Running Inpaint")
         mark("base_run_start")
         try:
             result = pipe(
@@ -942,6 +954,7 @@ def apply_inpaint(
 
     # Refine pass
     if do_refine and result is not None:
+        yield _pack("### Stage: Loading/Running Refine")
         print("[REFINE] Refine pass 시작")
         mark("refine_load_start")
         try:
@@ -1101,7 +1114,8 @@ def apply_inpaint(
     except Exception:
         pass
 
-    return final_image, run_msg, positive_final, global_status, used_seed_str
+    yield final_image, run_msg, positive_final, global_status, used_seed_str
+    return
 
 # -----------------------------------------------------------------------------
 # UI
