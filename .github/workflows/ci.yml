@@ -1,0 +1,35 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install minimal deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Syntax check
+        run: |
+          python -m py_compile app.py mp_tasks_utils.py sam_utils.py prompt_enricher.py
+
+      - name: Doctor (expected to fail if weights missing)
+        run: |
+          python scripts/doctor.py || true
+
+      - name: UI smoke (MOCK_INPAINT)
+        env:
+          MOCK_INPAINT: "1"
+        run: |
+          python -c "import app; print('import ok')"
