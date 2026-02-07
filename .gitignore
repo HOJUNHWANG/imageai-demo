@@ -39,3 +39,7 @@ outputs/
 
 # --- Logs ---
 *.log
+
+
+#--- Seeds ---
+last_seed.txt
