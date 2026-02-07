@@ -538,13 +538,22 @@ def load_pipe():
     print(f"[PIPE] Using dtype: {dtype}")
 
     try:
-        p = StableDiffusionXLInpaintPipeline.from_single_file(
-            model_path,
-            torch_dtype=dtype,
-            variant="fp16" if "safetensors" in model_path.lower() and DEVICE == "cuda" else None,
-            use_safetensors=True,
-            safety_checker=None,
-        )
+        if os.path.exists(model_path):
+            # Local single-file checkpoint
+            p = StableDiffusionXLInpaintPipeline.from_single_file(
+                model_path,
+                torch_dtype=dtype,
+                variant="fp16" if "safetensors" in model_path.lower() and DEVICE == "cuda" else None,
+                use_safetensors=True,
+                safety_checker=None,
+            )
+        else:
+            # HF repo id
+            p = StableDiffusionXLInpaintPipeline.from_pretrained(
+                model_path,
+                torch_dtype=dtype,
+                safety_checker=None,
+            )
 
         if DEVICE == "cuda":
             p.to("cuda")
@@ -1355,13 +1364,43 @@ def build_ui():
 
     return demo
 
+def _queue_compat(app: gr.Blocks, max_size: int, concurrency: int):
+    """Call gradio queue() with compatible kwargs across versions."""
+    import inspect
+
+    try:
+        sig = inspect.signature(app.queue)
+        params = set(sig.parameters.keys())
+    except Exception:
+        params = set()
+
+    kwargs = {}
+    if "max_size" in params:
+        kwargs["max_size"] = max_size
+
+    # Gradio queue concurrency kwarg differs by version.
+    if "concurrency_count" in params:
+        kwargs["concurrency_count"] = concurrency
+    elif "default_concurrency_limit" in params:
+        kwargs["default_concurrency_limit"] = concurrency
+    elif "concurrency_limit" in params:
+        kwargs["concurrency_limit"] = concurrency
+
+    try:
+        return app.queue(**kwargs)
+    except TypeError:
+        # Last resort: call without kwargs
+        return app.queue()
+
+
 if __name__ == "__main__":
     demo = build_ui()
     # Queue settings
     if PUBLIC_DEMO:
-        demo.queue(max_size=PUBLIC_MAX_QUEUE, concurrency_count=PUBLIC_CONCURRENCY)
+        _queue_compat(demo, max_size=PUBLIC_MAX_QUEUE, concurrency=PUBLIC_CONCURRENCY)
     else:
-        demo.queue(max_size=10)
+        _queue_compat(demo, max_size=10, concurrency=1)
+
     demo.launch(
         server_name="127.0.0.1",
         server_port=7860,
