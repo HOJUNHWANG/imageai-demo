@@ -692,8 +692,18 @@ def on_manual_click(evt: gr.SelectData, sam_model_type: str):
 
     x, y = evt.index[0], evt.index[1]
 
-    masker = sam_manager.get(sam_model_type)
-    mask_u8 = masker.predict_from_click(STATE["working_np"], x, y)
+    try:
+        masker = sam_manager.get(sam_model_type)
+        mask_u8 = masker.predict_from_click(STATE["working_np"], x, y)
+    except Exception as e:
+        # Friendly UI error instead of crashing the Gradio worker
+        msg = (
+            "Manual mask unavailable.\n"
+            "- Install: pip install git+https://github.com/facebookresearch/segment-anything.git\n"
+            "- Download weights into ./weights/: sam_vit_b_01ec64.pth (or sam_vit_h_4b8939.pth)\n"
+            f"- Error: {type(e).__name__}: {e}"
+        )
+        return None, None, msg, msg
 
     STATE["mask_u8"] = mask_u8
     STATE["selected_mask"] = mask_u8
