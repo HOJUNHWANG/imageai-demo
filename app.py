@@ -1328,7 +1328,7 @@ def build_ui():
         lang = gr.Dropdown(["en", "kr"], value="en", label="Language")
         title_md = gr.Markdown(t("en", "title"))
 
-        with gr.Accordion(t("en", "help_title"), open=True):
+        with gr.Accordion(t("en", "help_title"), open=False):
             help_md = gr.Markdown(render_help("en"))
 
         # Top bar: Status + VRAM + buttons
@@ -1357,6 +1357,31 @@ def build_ui():
 
             with gr.Column(scale=5):
                 with gr.Tabs():
+                    with gr.TabItem("Welcome"):
+                        gr.Markdown("""
+### Welcome
+
+This is a **local SDXL inpainting demo** (portfolio-friendly).
+
+**Quick start**
+- Upload an image
+- Create a mask (Manual or Auto)
+- Write a prompt (e.g., `make the shirt pink`)
+- Click **Prompt Check** (verify final prompts)
+- Click **Apply**
+
+**If edits are subtle**
+- Increase **Strength** a bit (e.g., 0.60 → 0.75)
+- Ensure the mask fully covers the garment
+- Try enabling **ControlNet** to preserve structure and reduce drift
+- Try **Refine** for consistency
+
+**If you hit memory issues on 2nd run**
+- Click **Unload Aux** or **Hard Clear**
+- Lower Working Long Side / Steps
+- Use `LOW_VRAM=1`, `AUTO_UNLOAD_AUX=1`
+""")
+
                     with gr.TabItem("Mask"):
                         gr.Markdown(f"### {t('en','auto_mask')}")
                         auto_target = gr.Dropdown(["top", "pants", "hair", "background", "person", "auto"], value="top", label="Auto mask target")
