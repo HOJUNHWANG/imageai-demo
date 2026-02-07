@@ -1413,12 +1413,12 @@ def build_ui():
         # Events
         input_image.upload(fn=on_upload, inputs=[input_image, working_long_side], outputs=[input_image, selected_mask_preview, auto_status, global_status])
         input_image.select(fn=on_manual_click, inputs=[sam_model], outputs=[mask_overlay, selected_mask_preview, auto_status, global_status])
-        input_image.select(fn=lambda: (_mask_source_text(),), inputs=None, outputs=[active_mask_md])
+        input_image.select(fn=lambda: _mask_source_text(), inputs=None, outputs=[active_mask_md])
 
         btn_auto.click(fn=build_auto_candidates_v5, inputs=[prompt, auto_enrich, edit_mode, auto_target], outputs=[auto_gallery, auto_status])
         btn_auto.click(fn=use_auto_mask, inputs=None, outputs=[active_mask_md, mask_overlay, selected_mask_preview])
         btn_clear.click(fn=clear_mask, outputs=[mask_overlay, selected_mask_preview, auto_gallery, auto_status])
-        btn_clear.click(fn=lambda: (_mask_source_text(),), inputs=None, outputs=[active_mask_md])
+        btn_clear.click(fn=lambda: _mask_source_text(), inputs=None, outputs=[active_mask_md])
 
         preview_btn.click(fn=preview_enriched_prompt, inputs=[prompt, negative, auto_enrich, edit_mode], outputs=[preview_output])
         preview_btn.click(fn=lambda p,n,a,m: (build_final_prompts(p,n,a,m)["prompt"],), inputs=[prompt, negative, auto_enrich, edit_mode], outputs=[positive_final_preview])
