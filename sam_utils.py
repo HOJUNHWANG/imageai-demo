@@ -2,10 +2,24 @@
 import os
 import numpy as np
 from functools import lru_cache
-from segment_anything import sam_model_registry, SamPredictor
+
+# Optional dependency: Segment Anything
+# Keep the public demo importable even if SAM is not installed.
+try:
+    from segment_anything import sam_model_registry, SamPredictor  # type: ignore
+    _SAM_AVAILABLE = True
+except Exception:
+    sam_model_registry = None
+    SamPredictor = None
+    _SAM_AVAILABLE = False
 
 class SamMasker:
     def __init__(self, model_type: str, checkpoint_path: str, device: str):
+        if not _SAM_AVAILABLE or sam_model_registry is None or SamPredictor is None:
+            raise ImportError(
+                "segment-anything is not installed. Install with: "
+                "pip install git+https://github.com/facebookresearch/segment-anything.git"
+            )
         sam = sam_model_registry[model_type](checkpoint=checkpoint_path)
         sam.to(device=device)
         self.predictor = SamPredictor(sam)
@@ -26,6 +40,9 @@ class SamMaskerManager:
     def __init__(self, weights_dir: str, device: str):
         self.weights_dir = weights_dir
         self.device = device
+
+    def is_available(self) -> bool:
+        return bool(_SAM_AVAILABLE)
 
     @lru_cache(maxsize=4)
     def _load(self, model_type: str) -> SamMasker:
