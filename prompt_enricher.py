@@ -28,8 +28,13 @@ KOR_COLOR = {
 }
 
 def enrich_positive(text: str | None) -> tuple[str, str]:
-    """Natural language → diffusion-friendly prompt."""
-    t = (text or "").strip().lower()
+    """Natural language → diffusion-friendly prompt.
+
+    Public demo note: keep the user's instruction (e.g., color change) and append
+    quality/anatomy tokens instead of replacing it.
+    """
+    raw = (text or "").strip()
+    t = raw.lower()
 
     # Parse target
     target = "top"
@@ -38,12 +43,18 @@ def enrich_positive(text: str | None) -> tuple[str, str]:
     elif any(k in t for k in ["상의", "shirt", "t-shirt", "top", "blouse"]):
         target = "top"
 
-    # Color
+    # Color (KR + EN)
     color = None
     for kor, eng in KOR_COLOR.items():
         if kor in t:
             color = eng
             break
+
+    if color is None:
+        for c in ["black", "white", "red", "blue", "green", "gray", "brown", "beige", "ivory", "yellow", "purple", "pink"]:
+            if c in t:
+                color = c
+                break
 
     # Garment
     garment = None
@@ -68,18 +79,24 @@ def enrich_positive(text: str | None) -> tuple[str, str]:
 
     tokens.extend(QUALITY_TOKENS)
 
-    expanded = ", ".join(set(tokens))  # 중복 제거
+    expanded = ", ".join(sorted(set(tokens)))  # deterministic order
 
-    # CLIP 77 토큰 제한 우회
-    token_list = expanded.split(", ")
+    # Combine: keep user intent + append expanded tokens
+    if raw:
+        combined = f"{raw}, {expanded}" if expanded else raw
+    else:
+        combined = expanded
+
+    # CLIP 77 토큰 제한 우회 (legacy BREAK support)
+    token_list = combined.split(", ")
     if len(token_list) > 75:
         mid = len(token_list) // 2
         part1 = ", ".join(token_list[:mid])
         part2 = ", ".join(token_list[mid:])
-        expanded = f"{part1} BREAK {part2}"  # BREAK로 multi-prompt 구분
+        combined = f"{part1} BREAK {part2}"  # BREAK로 multi-prompt 구분
 
     info = f"target={target}, color={color}, garment={garment}"
-    return expanded, info
+    return combined, info
 
 def enrich_negative(text: str | None) -> str:
     """Negative prompt enrichment."""

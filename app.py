@@ -121,7 +121,12 @@ STATE = {
     "working_pil": None,
     "working_np": None,
     "orig_pil": None,
-    "mask_u8": None,
+
+    # Masks
+    "manual_mask_u8": None,
+    "auto_mask_u8": None,
+    "active_mask_source": None,  # "manual" | "auto" | None
+
     "selected_mask": None,
     "auto_mask_candidates": []
 }
@@ -675,7 +680,9 @@ def on_upload(img: Image.Image, working_long_side: int):
     STATE["orig_pil"] = None
     STATE["working_pil"] = working
     STATE["working_np"] = to_rgb_np(working)
-    STATE["mask_u8"] = None
+    STATE["manual_mask_u8"] = None
+    STATE["auto_mask_u8"] = None
+    STATE["active_mask_source"] = None
     STATE["selected_mask"] = None
     STATE["auto_mask_candidates"] = []
 
@@ -705,7 +712,8 @@ def on_manual_click(evt: gr.SelectData, sam_model_type: str):
         )
         return None, None, msg, msg
 
-    STATE["mask_u8"] = mask_u8
+    STATE["manual_mask_u8"] = mask_u8
+    STATE["active_mask_source"] = "manual"
     STATE["selected_mask"] = mask_u8
 
     vis = overlay_mask(STATE["working_np"], mask_u8)
@@ -714,7 +722,7 @@ def on_manual_click(evt: gr.SelectData, sam_model_type: str):
     status_msg = f"Manual mask built (SAM {sam_model_type})."
     return Image.fromarray(vis), mask_preview, status_msg, status_msg
 
-def build_auto_candidates_v5(prompt: str, auto_enrich: bool, edit_mode: str):
+def build_auto_candidates_v5(prompt: str, auto_enrich: bool, edit_mode: str, auto_target: str):
     t0 = time.time()
 
     user_prompt = normalize_space(prompt)
@@ -731,17 +739,22 @@ def build_auto_candidates_v5(prompt: str, auto_enrich: bool, edit_mode: str):
     except Exception as e:
         return [], str(e), ""
 
-    try:
-        info = parse_prompt_simple(positive_final)
-        target = info.get("target", "top")
-    except Exception as e:
-        return [], str(e), positive_final
+    # Target selection: UI dropdown wins (more predictable than prompt parsing)
+    target = (auto_target or "top").strip().lower()
+    if target == "auto":
+        try:
+            info = parse_prompt_simple(positive_final)
+            target = info.get("target", "top")
+        except Exception as e:
+            return [], str(e), positive_final
 
     if mp_helper is None:
         return [], "mp_helper unavailable", positive_final
 
     try:
-        if target == "sleeve":
+        if target == "person":
+            c = mp_helper.person_mask(STATE["working_pil"], threshold=0.5)
+        elif target == "sleeve":
             c = build_sleeve_mask_v5_tasks(STATE["working_pil"], mp_helper)
         elif target == "top":
             c = build_top_mask_v5_tasks(STATE["working_pil"], mp_helper)
@@ -763,7 +776,9 @@ def build_auto_candidates_v5(prompt: str, auto_enrich: bool, edit_mode: str):
         c = np.where(c > 127, 255, 0).astype(np.uint8)
 
         STATE["auto_mask_candidates"] = [c]
-        STATE["selected_mask"] = c  # 자동 선택
+        STATE["auto_mask_u8"] = c
+        STATE["active_mask_source"] = "auto"
+        STATE["selected_mask"] = c  # auto 선택
 
         dt = time.time() - t0
         return [Image.fromarray(c)], f"v5 OK target={target} time={dt:.2f}s", positive_final
@@ -771,8 +786,47 @@ def build_auto_candidates_v5(prompt: str, auto_enrich: bool, edit_mode: str):
     except Exception as e:
         return [], str(e), positive_final
 
+def _get_active_mask() -> np.ndarray | None:
+    src = STATE.get("active_mask_source")
+    if src == "manual":
+        return STATE.get("manual_mask_u8")
+    if src == "auto":
+        return STATE.get("auto_mask_u8")
+    # fallback
+    return STATE.get("manual_mask_u8") or STATE.get("auto_mask_u8")
+
+
+def _mask_source_text() -> str:
+    src = STATE.get("active_mask_source")
+    if src == "manual":
+        return "Active mask: **Manual (SAM click)**"
+    if src == "auto":
+        return "Active mask: **Auto (MediaPipe)**"
+    return "Active mask: *(none)*"
+
+
+def use_manual_mask():
+    if STATE.get("manual_mask_u8") is None:
+        return _mask_source_text(), None, None
+    STATE["active_mask_source"] = "manual"
+    m = STATE["manual_mask_u8"]
+    vis = overlay_mask(STATE["working_np"], m) if STATE.get("working_np") is not None else None
+    return _mask_source_text(), (Image.fromarray(vis) if vis is not None else None), Image.fromarray(m)
+
+
+def use_auto_mask():
+    if STATE.get("auto_mask_u8") is None:
+        return _mask_source_text(), None, None
+    STATE["active_mask_source"] = "auto"
+    m = STATE["auto_mask_u8"]
+    vis = overlay_mask(STATE["working_np"], m) if STATE.get("working_np") is not None else None
+    return _mask_source_text(), (Image.fromarray(vis) if vis is not None else None), Image.fromarray(m)
+
+
 def clear_mask():
-    STATE["mask_u8"] = None
+    STATE["manual_mask_u8"] = None
+    STATE["auto_mask_u8"] = None
+    STATE["active_mask_source"] = None
     STATE["selected_mask"] = None
     STATE["auto_mask_candidates"] = []
     if STATE["working_np"] is None:
@@ -803,7 +857,9 @@ def apply_inpaint(
     def _pack(stage_md: str, run_msg: str = '', final_prompt: str = ''):
         # Keep the UI responsive by yielding intermediate tuples.
         # outputs: [output, run_status, positive_final_preview, global_status, seed_display]
-        return None, run_msg, final_prompt, stage_md, used_seed_str
+        # show stage in run_status during execution
+        stage_line = stage_md.replace('### Stage: ', '').strip()
+        return None, (run_msg or stage_line), final_prompt, stage_md, used_seed_str
 
     yield _pack('### Stage: Preparing inputs')
     if MOCK_INPAINT:
@@ -817,10 +873,8 @@ def apply_inpaint(
     if seed is not None and int(seed) >= 0:
         gen = torch.Generator(DEVICE).manual_seed(int(seed))
 
-    # 마스크 가져오기
-    mask_u8 = STATE.get("mask_u8")
-    if mask_u8 is None:
-        mask_u8 = STATE.get("selected_mask")
+    # Pick active mask source
+    mask_u8 = _get_active_mask()
 
     if mask_u8 is None:
         yield _pack("### Stage: Error", "Mask missing")
@@ -1127,11 +1181,7 @@ def apply_inpaint(
         except Exception:
             pass
 
-    # Update VRAM text automatically (for convenience)
-    try:
-        global_status = f"{global_status}\n\n### VRAM\n```\n{get_vram_text()}\n```"
-    except Exception:
-        pass
+    # VRAM is displayed in the dedicated VRAM box; keep status focused.
 
     yield final_image, run_msg, positive_final, global_status, used_seed_str
     return
@@ -1297,11 +1347,17 @@ def build_ui():
                 with gr.Tabs():
                     with gr.TabItem("Mask"):
                         gr.Markdown(f"### {t('en','auto_mask')}")
+                        auto_target = gr.Dropdown(["top", "pants", "hair", "background", "person", "auto"], value="top", label="Auto mask target")
                         auto_gallery = gr.Gallery(columns=4, height=320)
                         auto_status = gr.Textbox(lines=2)
                         with gr.Row():
                             btn_auto = gr.Button(t("en", "auto_mask_btn"))
                             btn_clear = gr.Button(t("en", "clear_mask"))
+
+                        active_mask_md = gr.Markdown(_mask_source_text())
+                        with gr.Row():
+                            btn_use_manual = gr.Button("Use Manual")
+                            btn_use_auto = gr.Button("Use Auto")
 
                     with gr.TabItem("Prompt"):
                         auto_enrich = gr.Checkbox(value=True, label=t("en", "auto_enrich"))
@@ -1339,11 +1395,15 @@ def build_ui():
         # Events
         input_image.upload(fn=on_upload, inputs=[input_image, working_long_side], outputs=[input_image, selected_mask_preview, auto_status, global_status])
         input_image.select(fn=on_manual_click, inputs=[sam_model], outputs=[mask_overlay, selected_mask_preview, auto_status, global_status])
+        input_image.select(fn=lambda: (_mask_source_text(),), inputs=None, outputs=[active_mask_md])
 
-        btn_auto.click(fn=build_auto_candidates_v5, inputs=[prompt, auto_enrich, edit_mode], outputs=[auto_gallery, auto_status, positive_final_preview])
+        btn_auto.click(fn=build_auto_candidates_v5, inputs=[prompt, auto_enrich, edit_mode, auto_target], outputs=[auto_gallery, auto_status, positive_final_preview])
+        btn_auto.click(fn=use_auto_mask, inputs=None, outputs=[active_mask_md, mask_overlay, selected_mask_preview])
         btn_clear.click(fn=clear_mask, outputs=[mask_overlay, selected_mask_preview, auto_gallery, auto_status])
+        btn_clear.click(fn=lambda: (_mask_source_text(),), inputs=None, outputs=[active_mask_md])
 
         preview_btn.click(fn=preview_enriched_prompt, inputs=[prompt, negative, auto_enrich, edit_mode], outputs=[preview_output])
+        preview_btn.click(fn=lambda p,n,a,m: (build_final_prompts(p,n,a,m)["prompt"],), inputs=[prompt, negative, auto_enrich, edit_mode], outputs=[positive_final_preview])
 
         btn_apply.click(
             fn=apply_inpaint,
@@ -1356,6 +1416,9 @@ def build_ui():
             outputs=[output, run_status, positive_final_preview, global_status, seed_display],
         )
         btn_apply.click(fn=lambda: (get_vram_text(),), inputs=None, outputs=[vram_box])
+
+        btn_use_manual.click(fn=use_manual_mask, inputs=None, outputs=[active_mask_md, mask_overlay, selected_mask_preview])
+        btn_use_auto.click(fn=use_auto_mask, inputs=None, outputs=[active_mask_md, mask_overlay, selected_mask_preview])
 
         # VRAM buttons
         btn_vram_refresh.click(fn=lambda: (get_vram_text(),), inputs=None, outputs=[vram_box])
