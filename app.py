@@ -996,10 +996,50 @@ def apply_inpaint(
     if d_ref_run is not None: prof_msg_parts.append(f"ref_run:{d_ref_run:.2f}s")
     prof_msg = " | ".join(prof_msg_parts) if prof_msg_parts else "profile:n/a"
 
+    # Human-friendly performance breakdown + bottleneck guess
+    stages = []
+    if d_cn_load is not None: stages.append(("ControlNet load", d_cn_load))
+    if d_cn_run is not None:  stages.append(("ControlNet run", d_cn_run))
+    if d_base is not None:    stages.append(("Inpaint run", d_base))
+    if d_ref_load is not None:stages.append(("Refine load", d_ref_load))
+    if d_ref_run is not None: stages.append(("Refine run", d_ref_run))
+
+    bottleneck_name = None
+    bottleneck_reason = None
+    bottleneck_tip = None
+    if stages:
+        bottleneck_name, bottleneck_val = max(stages, key=lambda x: x[1])
+        if bottleneck_name in ("ControlNet load", "Refine load"):
+            bottleneck_reason = "Model pipeline had to be loaded into memory (first run or after unload)."
+            bottleneck_tip = "Tip: keep the option enabled between runs, or disable AUTO_UNLOAD_AUX if you prefer speed over VRAM stability."
+        elif bottleneck_name in ("ControlNet run",):
+            bottleneck_reason = "ControlNet adds extra compute and increases VRAM pressure."
+            bottleneck_tip = "Tip: try fewer steps / smaller Working Long Side, or disable ControlNet for faster runs."
+        elif bottleneck_name in ("Refine run",):
+            bottleneck_reason = "Refine is an additional img2img pass (extra inference)."
+            bottleneck_tip = "Tip: disable Refine, or lower steps/size if you hit memory/time limits."
+        else:
+            bottleneck_reason = "Most time is spent in SDXL inference (steps × resolution)."
+            bottleneck_tip = "Tip: lower Steps or Working Long Side; LOW_VRAM=1 improves stability but may reduce speed."
+
     model_info = f"Juggernaut XL | ControlNet: {use_controlnet} ({controlnet_type}) | Refine: {do_refine}"
     run_msg = f"완료! {model_info} | Time: {int(dt // 60)}m {int(dt % 60)}s"
 
     # Markdown-friendly status block
+    perf_lines = []
+    for name, sec in stages:
+        perf_lines.append(f"- {name}: **{sec:.2f}s**")
+    perf_md = "\n".join(perf_lines) if perf_lines else "- (n/a)"
+
+    bottleneck_md = ""
+    if bottleneck_name:
+        bottleneck_md = (
+            f"\n### Bottleneck (best guess)\n"
+            f"- **{bottleneck_name}**\n"
+            f"- Why: {bottleneck_reason}\n"
+            f"- {bottleneck_tip}\n"
+        )
+
     global_status = (
         f"### Done\n"
         f"- Mode: **{edit_mode}**\n"
@@ -1007,8 +1047,11 @@ def apply_inpaint(
         f"- ControlNet: **{use_controlnet}** ({controlnet_type})\n"
         f"- Refine: **{do_refine}**\n"
         f"- Seed: **{used_seed_str}**\n\n"
-        f"**Timing**: {int(dt // 60)}m {int(dt % 60)}s\n"
-        f"**Profile**: `{prof_msg}`\n"
+        f"### Timing\n"
+        f"- Total: **{int(dt // 60)}m {int(dt % 60)}s**\n"
+        f"{perf_md}\n"
+        f"\n_Profile raw_: `{prof_msg}`\n"
+        f"{bottleneck_md}"
     )
 
     # Post-run VRAM housekeeping
