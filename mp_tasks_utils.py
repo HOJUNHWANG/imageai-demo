@@ -45,6 +45,9 @@ class MPTasksHelper:
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=np.array(pil.convert("RGB")))
         segmentation_result = self.segmenter.segment(mp_image)
         mask = segmentation_result.category_mask.numpy_view()
+        # Some environments return (H, W, 1). Normalize to (H, W) to avoid broadcasting errors.
+        if getattr(mask, "ndim", 0) == 3 and mask.shape[-1] == 1:
+            mask = mask[..., 0]
         person = (mask > threshold).astype(np.uint8) * 255
         return person
 

@@ -341,22 +341,125 @@ def postprocess_mask(mask_u8: np.ndarray, expand_px: int, blur_px: int) -> np.nd
 
     return np.clip(m, 0, 255).astype(np.uint8)
 
+def _get_tokenizer():
+    # Tokenizer is available only after the pipeline is loaded.
+    if pipe is not None and hasattr(pipe, "tokenizer"):
+        return pipe.tokenizer
+    return None
+
+
+def _split_sdxl_prompt_overflow(text: str, tokenizer, max_len: int = 77):
+    """Return (prompt, prompt_2, token_count, token_count_2, warnings).
+
+    Strategy: split by commas into two prompts when token count exceeds max_len.
+    If still too long, truncate safely.
+    """
+    warnings = []
+    text = normalize_space(text)
+    if tokenizer is None:
+        return text, None, None, None, ["Tokenizer unavailable (model not loaded). Prompt overflow check skipped."]
+
+    def count_tokens(t: str) -> int:
+        ids = tokenizer(t, add_special_tokens=True, return_tensors=None)["input_ids"]
+        return len(ids)
+
+    def truncate_to(t: str, limit: int) -> str:
+        out = tokenizer(t, add_special_tokens=True, truncation=True, max_length=limit, return_tensors=None)
+        return tokenizer.decode(out["input_ids"], skip_special_tokens=True)
+
+    t0 = text
+    n0 = count_tokens(t0)
+    if n0 <= max_len:
+        return t0, None, n0, 0, []
+
+    parts = [p.strip() for p in t0.split(",") if p.strip()]
+    if len(parts) <= 1:
+        # no safe split point; truncate
+        warnings.append(f"Prompt exceeds {max_len} tokens ({n0}). Truncated.")
+        t_tr = truncate_to(t0, max_len)
+        return t_tr, None, count_tokens(t_tr), 0, warnings
+
+    # greedy split: build prompt1 until near limit
+    p1 = []
+    p2 = []
+    for p in parts:
+        cand = ", ".join(p1 + [p])
+        if count_tokens(cand) <= max_len:
+            p1.append(p)
+        else:
+            p2.append(p)
+
+    s1 = ", ".join(p1).strip()
+    s2 = ", ".join(p2).strip() if p2 else None
+
+    n1 = count_tokens(s1) if s1 else 0
+    n2 = count_tokens(s2) if s2 else 0
+
+    if s2 is None:
+        warnings.append(f"Prompt exceeds {max_len} tokens ({n0}). Truncated.")
+        s1 = truncate_to(t0, max_len)
+        return s1, None, count_tokens(s1), 0, warnings
+
+    if n2 > max_len:
+        warnings.append(f"prompt_2 exceeds {max_len} tokens ({n2}). Truncated.")
+        s2 = truncate_to(s2, max_len)
+        n2 = count_tokens(s2)
+
+    warnings.append(f"Prompt overflow: split into prompt + prompt_2 (max {max_len} tokens each).")
+    return s1, s2, n1, n2, warnings
+
+
+def build_final_prompts(prompt: str, negative: str, auto_enrich: bool, edit_mode: str):
+    tok = _get_tokenizer()
+
+    pos = (prompt or "").strip()
+    neg = (negative or "").strip()
+
+    if auto_enrich:
+        try:
+            pos, _ = enrich_positive(pos)
+        except Exception as e:
+            print(f"[WARN] Positive enrich failed: {e}")
+        try:
+            neg = enrich_negative(neg)
+        except Exception as e:
+            print(f"[WARN] Negative enrich failed: {e}")
+
+    neg = comma_join_unique([neg, build_default_negative(edit_mode)])
+
+    # SDXL 77-token handling
+    pos1, pos2, pos_n1, pos_n2, pos_warn = _split_sdxl_prompt_overflow(pos, tok, 77)
+    neg1, neg2, neg_n1, neg_n2, neg_warn = _split_sdxl_prompt_overflow(neg, tok, 77)
+
+    warnings = pos_warn + neg_warn
+
+    return {
+        "prompt": pos1,
+        "prompt_2": pos2,
+        "negative": neg1,
+        "negative_2": neg2,
+        "tok_pos": pos_n1,
+        "tok_pos2": pos_n2,
+        "tok_neg": neg_n1,
+        "tok_neg2": neg_n2,
+        "warnings": warnings,
+    }
+
+
 def preview_enriched_prompt(prompt: str, negative: str, auto_enrich: bool, edit_mode: str):
     if not (prompt or "").strip():
         return "Positive prompt is required!"
 
-    positive_final_pos = prompt.strip()
-    positive_final_neg = (negative or "").strip()
+    fin = build_final_prompts(prompt, negative, auto_enrich, edit_mode)
 
-    if auto_enrich:
-        positive_final_pos, _ = enrich_positive(prompt)
-        positive_final_neg = enrich_negative(positive_final_neg)
-
-    positive_final_neg = comma_join_unique([positive_final_neg, build_default_negative(edit_mode)])
-
+    warn = "\n".join([f"- {w}" for w in fin["warnings"]]) if fin["warnings"] else "(none)"
     preview_text = (
-        f"Positive (enriched):\n{positive_final_pos}\n\n"
-        f"Negative (enriched):\n{positive_final_neg}"
+        f"Final Positive:\n{fin['prompt']}\n\n"
+        f"Final Positive 2:\n{fin['prompt_2'] or '(empty)'}\n\n"
+        f"Final Negative:\n{fin['negative']}\n\n"
+        f"Final Negative 2:\n{fin['negative_2'] or '(empty)'}\n\n"
+        f"Token counts (approx): pos={fin['tok_pos']} pos2={fin['tok_pos2']} | neg={fin['tok_neg']} neg2={fin['tok_neg2']}\n\n"
+        f"Warnings:\n{warn}"
     )
     return preview_text
 
@@ -672,22 +775,15 @@ def apply_inpaint(
     mask_pil = Image.fromarray(mask_pp).convert("L")
     image_pil = STATE["working_pil"].convert("RGB")
 
-    # 프롬프트 enrich
-    positive_final = (prompt or "").strip()
-    negative_final = (negative or "").strip()
+    fin = build_final_prompts(prompt, negative, auto_enrich, edit_mode)
+    positive_final = fin["prompt"]
+    negative_final = fin["negative"]
+    prompt_2 = fin["prompt_2"]
+    negative_2 = fin["negative_2"]
 
-    if auto_enrich:
-        try:
-            positive_final, _ = enrich_positive(prompt)
-        except Exception as e:
-            print(f"[WARN] Positive enrich failed: {e}")
-
-        try:
-            negative_final = enrich_negative(negative_final)
-        except Exception as e:
-            print(f"[WARN] Negative enrich failed: {e}")
-
-    negative_final = comma_join_unique([negative_final, build_default_negative(edit_mode)])
+    if fin["warnings"]:
+        for w in fin["warnings"]:
+            print(f"[PROMPT][WARN] {w}")
 
     # Mode-specific clamps can be added here if needed.
 
@@ -753,7 +849,9 @@ def apply_inpaint(
             try:
                 result = p(
                     prompt=positive_final,
+                    prompt_2=prompt_2,
                     negative_prompt=negative_final,
+                    negative_prompt_2=negative_2,
                     image=image_pil,
                     mask_image=mask_pil,
                     control_image=image_pil,
@@ -761,7 +859,7 @@ def apply_inpaint(
                     num_inference_steps=steps,
                     strength=strength,
                     guidance_scale=guidance,
-                    generator=gen
+                    generator=gen,
                 ).images[0]
                 print("[CONTROLNET] Generation success!")
             except Exception as e:
@@ -777,7 +875,9 @@ def apply_inpaint(
         try:
             result = pipe(
                 prompt=positive_final,
+                prompt_2=prompt_2,
                 negative_prompt=negative_final,
+                negative_prompt_2=negative_2,
                 image=image_pil,
                 mask_image=mask_pil,
                 num_inference_steps=steps,
@@ -831,11 +931,12 @@ def apply_inpaint(
             mark("refine_run_start")
             refined = img2img_pipe(
                 prompt=positive_final,
+                prompt_2=prompt_2,
                 image=result,
                 strength=0.20,
                 num_inference_steps=10,
                 guidance_scale=guidance,
-                generator=gen
+                generator=gen,
             ).images[0]
             mark("refine_run_end")
             print("[REFINE] Refine completed")
@@ -987,14 +1088,14 @@ If you hit **memory errors** on the 2nd run:
                     prompt = gr.Textbox(lines=3, label="Positive Prompt")
                     negative = gr.Textbox(lines=3, label="Negative Prompt")
                     with gr.Row():
-                        preview_btn = gr.Button("Preview Enriched Prompt", variant="secondary")
+                        preview_btn = gr.Button("Prompt Check", variant="secondary")
                         preview_output = gr.Textbox(
-                            label="Preview (enriched prompt - Apply 전에 확인용)",
-                            lines=8,
+                            label="Prompt Check (final prompts + token counts)",
+                            lines=10,
                             interactive=False,
-                            placeholder="여기에 enrich된 프롬프트가 미리 표시됩니다"
+                            placeholder="Click to see the exact prompts that will be applied"
                         )
-                    positive_final_preview = gr.Textbox(lines=7, interactive=False, label="positive_final Prompt")
+                    positive_final_preview = gr.Textbox(lines=5, interactive=False, label="Final prompt (applied)")
 
                 with gr.Group():
                     gr.Markdown("Controls")
