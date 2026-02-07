@@ -1006,6 +1006,12 @@ def apply_inpaint(
         except Exception:
             pass
 
+    # Update VRAM text automatically (for convenience)
+    try:
+        global_status = f"{global_status}\n\n[VRAM]\n{get_vram_text()}"
+    except Exception:
+        pass
+
     return final_image, run_msg, positive_final, global_status, used_seed_str
 
 # -----------------------------------------------------------------------------
@@ -1151,6 +1157,9 @@ If you hit **memory errors** on the 2nd run:
             ],
             outputs=[output, run_status, positive_final_preview, global_status, seed_display]
         )
+
+        # Keep VRAM box in sync after Apply
+        btn_apply.click(fn=lambda: (get_vram_text(),), inputs=None, outputs=[vram_box])
 
         # VRAM buttons
         btn_vram_refresh.click(fn=lambda: (get_vram_text(),), inputs=None, outputs=[vram_box])
