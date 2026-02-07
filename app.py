@@ -986,6 +986,13 @@ def apply_inpaint(
             pass
         print("[VRAM] Cleared cache after generation")
 
+    # Free large references from auto-mask gallery to reduce RAM usage on next runs
+    try:
+        STATE['auto_mask_candidates'] = []
+        gc.collect()
+    except Exception:
+        pass
+
     # seed 기록
     try:
         with open("last_seed.txt", "w") as f:
