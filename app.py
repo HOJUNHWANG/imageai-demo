@@ -1463,11 +1463,37 @@ This is a **local SDXL inpainting demo** (portfolio-friendly).
         btn_use_manual.click(fn=use_manual_mask, inputs=None, outputs=[active_mask_md, mask_overlay, selected_mask_preview])
         btn_use_auto.click(fn=use_auto_mask, inputs=None, outputs=[active_mask_md, mask_overlay, selected_mask_preview])
 
+        def _notify(msg: str):
+            try:
+                gr.Info(msg)
+            except Exception:
+                pass
         # VRAM buttons
-        btn_vram_refresh.click(fn=lambda: (get_vram_text(),), inputs=None, outputs=[vram_box])
-        btn_soft_clear.click(fn=soft_clear_vram, inputs=None, outputs=[global_status, vram_box])
-        btn_unload_aux.click(fn=lambda: (unload_aux_pipelines() or "[VRAM] Unloaded aux pipelines.", get_vram_text()), inputs=None, outputs=[global_status, vram_box])
-        btn_hard_clear.click(fn=hard_clear_vram, inputs=None, outputs=[global_status, vram_box])
+        btn_vram_refresh.click(
+            fn=lambda: (_notify('VRAM refreshed.'), get_vram_text())[1:],
+            inputs=None,
+            outputs=[vram_box],
+        )
+
+        def _soft_clear_ui():
+            msg, txt = soft_clear_vram()
+            _notify(msg)
+            return txt
+
+        def _hard_clear_ui():
+            msg, txt = hard_clear_vram()
+            _notify(msg)
+            return txt
+
+        def _unload_aux_ui():
+            unload_aux_pipelines()
+            txt = get_vram_text()
+            _notify('Unloaded aux pipelines (ControlNet/Refine).')
+            return txt
+
+        btn_soft_clear.click(fn=_soft_clear_ui, inputs=None, outputs=[vram_box])
+        btn_unload_aux.click(fn=_unload_aux_ui, inputs=None, outputs=[vram_box])
+        btn_hard_clear.click(fn=_hard_clear_ui, inputs=None, outputs=[vram_box])
 
         # Language switching (best-effort: update help/title; some labels are static)
         def _on_lang_change(l):
