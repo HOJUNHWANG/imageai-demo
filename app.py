@@ -27,7 +27,8 @@ from diffusers import (
     StableDiffusionXLInpaintPipeline,
     ControlNetModel,
     StableDiffusionXLControlNetInpaintPipeline,
-    StableDiffusionXLImg2ImgPipeline
+    StableDiffusionXLImg2ImgPipeline,
+    FluxPipeline
 )
 from diffusers.utils import load_image
 from prompt_enricher import enrich_positive, enrich_negative
@@ -136,6 +137,8 @@ pipe = None
 PIPE = None  # 유지 (기존 코드 호환)
 controlnet_pipes = {}
 img2img_pipe = None
+txt2img_pipe = None
+CURRENT_MODE = "edit"  # "edit" or "generate"
 
 # -----------------------------------------------------------------------------
 # VRAM / RAM helpers
@@ -226,12 +229,13 @@ def hard_clear_vram():
     - OOM 복구 확실
     - 다음 생성은 모델 재로딩 때문에 느려짐
     """
-    global pipe, PIPE, controlnet_pipes, img2img_pipe
+    global pipe, PIPE, controlnet_pipes, img2img_pipe, txt2img_pipe
 
     if DEVICE != "cuda" or (not torch.cuda.is_available()):
         # CPU 모드면 그냥 객체만 정리
         pipe = None
         PIPE = None
+        txt2img_pipe = None
         controlnet_pipes.clear()
         img2img_pipe = None
         gc.collect()
@@ -248,6 +252,14 @@ def hard_clear_vram():
                 pass
         pipe = None
         PIPE = None
+
+        # 1-b) Txt2Img 파이프라인 unload
+        if txt2img_pipe is not None:
+            try:
+                txt2img_pipe.to("cpu")
+            except Exception:
+                pass
+        txt2img_pipe = None
 
         # 2) ControlNet 파이프들 unload
         if isinstance(controlnet_pipes, dict) and controlnet_pipes:
@@ -544,24 +556,30 @@ def parse_prompt_simple(prompt: str) -> dict:
 # Model loaders
 # -----------------------------------------------------------------------------
 
-def load_pipe():
-    global pipe, PIPE
+def get_inpaint_pipe():
+    global pipe, PIPE, txt2img_pipe
+    if pipe is not None:
+        return pipe
+
     if MOCK_INPAINT:
         print("[PIPE] MOCK_INPAINT mode - no real model loaded")
-        pipe = None
-        PIPE = None
         return None
+
+    # Unload FLUX if allowed (strict mode)
+    if txt2img_pipe is not None:
+        print("[PIPE] Unloading FLUX to free VRAM for SDXL...")
+        txt2img_pipe = None
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
     dtype = torch.float16 if DEVICE == "cuda" else torch.float32
     model_path = JUGGERNAUT_INPAINT if os.path.exists(JUGGERNAUT_INPAINT) else DEFAULT_MODEL
 
-    print(f"[PIPE] Loading checkpoint from: {model_path}")
-    print(f"[PIPE] Target device: {DEVICE}")
-    print(f"[PIPE] Using dtype: {dtype}")
+    print(f"[PIPE] Loading Inpaint Checkpoint from: {model_path}")
 
     try:
         if os.path.exists(model_path):
-            # Local single-file checkpoint
             p = StableDiffusionXLInpaintPipeline.from_single_file(
                 model_path,
                 torch_dtype=dtype,
@@ -570,7 +588,6 @@ def load_pipe():
                 safety_checker=None,
             )
         else:
-            # HF repo id
             p = StableDiffusionXLInpaintPipeline.from_pretrained(
                 model_path,
                 torch_dtype=dtype,
@@ -579,80 +596,82 @@ def load_pipe():
 
         if DEVICE == "cuda":
             p.to("cuda")
-
-            # Offload vs full-GPU
-            if CPU_OFFLOAD and hasattr(p, "enable_model_cpu_offload"):
+            if CPU_OFFLOAD:
                 p.enable_model_cpu_offload()
-                print("[GPU] CPU_OFFLOAD enabled (more stable, may be slower)")
-            else:
-                if hasattr(p, "disable_model_cpu_offload"):
-                    p.disable_model_cpu_offload()
-                print("[GPU] Full GPU mode (cpu_offload disabled)")
-
-            # Low VRAM helpers
+            
+            # Optimization
             if LOW_VRAM:
-                try:
-                    p.enable_attention_slicing("auto")
-                except Exception:
-                    pass
-                try:
-                    p.enable_vae_slicing()
-                except Exception:
-                    pass
-                try:
-                    p.enable_vae_tiling()
-                except Exception:
-                    pass
-                print("[OPT] LOW_VRAM enabled (attention/vae slicing/tiling)")
-
-            # Optional: xformers
+                p.enable_vae_tiling()
+                p.enable_attention_slicing("auto")
+                
             try:
                 p.enable_xformers_memory_efficient_attention()
-                print("[OPT] xformers enabled - faster attention")
             except Exception:
-                print("[OPT] xformers not available (fallback)")
+                pass
         else:
             p.to("cpu")
-            print("[CPU] Running on CPU - generation will be slow")
-
-        # Warm-up (optional)
-        if WARMUP:
-            print("[PIPE] Running warm-up dummy inference...")
-            try:
-                dummy_image = Image.new("RGB", (512, 512), color="white")
-                dummy_mask = Image.new("L", (512, 512), color=0)
-                _ = p(
-                    prompt="a photo of a cat",
-                    image=dummy_image,
-                    mask_image=dummy_mask,
-                    num_inference_steps=1,
-                    strength=0.01,
-                    guidance_scale=1.0,
-                ).images[0]
-                print("[PIPE] Warm-up success! GPU/VRAM ready")
-            except Exception as warm_up_e:
-                print(f"[PIPE] Warm-up failed (non-fatal): {str(warm_up_e)}")
-        else:
-            print("[PIPE] Warm-up disabled (WARMUP=0)")
 
         pipe = p
         PIPE = p
-        print("[PIPE] Loaded successfully!")
-        print(f"[PIPE] Pipeline class: {type(pipe).__name__}")
-        print(f"[PIPE] Scheduler: {type(pipe.scheduler).__name__}")
-        print(f"[PIPE] Device: {pipe.device}")
-        print(f"[PIPE] UNet dtype: {next(pipe.unet.parameters()).dtype}")
-
         return pipe
 
     except Exception as e:
-        print(f"[PIPE] Load failed: {str(e)}")
-        print("[PIPE] Check model path, safetensors file, or diffusers version")
-        pipe = None
-        PIPE = None
+        print(f"[PIPE] SDXL Load Failed: {e}")
         return None
 
-PIPE = load_pipe()
+def get_txt2img_pipe():
+    global pipe, PIPE, txt2img_pipe
+    if txt2img_pipe is not None:
+        return txt2img_pipe
+
+    # Unload SDXL
+    if pipe is not None:
+        print("[PIPE] Unloading SDXL to free VRAM for FLUX...")
+        pipe = None
+        PIPE = None
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+    print("[PIPE] Loading FLUX.1-schnell...")
+    try:
+        # FLUX Schnell (Bfloat16 for 3080 Ti is optimal)
+        dtype = torch.bfloat16 if (DEVICE == "cuda" and torch.cuda.is_bf16_supported()) else torch.float16
+        
+        p = FluxPipeline.from_pretrained(
+            "black-forest-labs/FLUX.1-schnell",
+            torch_dtype=dtype
+        )
+        
+        if DEVICE == "cuda":
+            # FLUX is huge, always offload to CPU when not active in a step
+            p.enable_model_cpu_offload()
+            # VAE slicing helps too
+            # p.enable_vae_tiling() # Optional, verify support
+        
+        txt2img_pipe = p
+        return txt2img_pipe
+    except Exception as e:
+        print(f"[PIPE] FLUX Load Failed: {e}")
+        return None
+
+def switch_mode(target_mode: str):
+    global CURRENT_MODE
+    print(f"[MODE] Switching to {target_mode}...")
+    
+    if target_mode == "generate":
+        get_txt2img_pipe()
+        CURRENT_MODE = "generate"
+        return "Switched to Text-to-Image (FLUX)"
+    else:
+        get_inpaint_pipe()
+        CURRENT_MODE = "edit"
+        return "Switched to Inpainting (SDXL)"
+
+# Initial Load
+# PIPE = get_inpaint_pipe()  # Lazy load on startup or keep as is? 
+# Let's load Inpaint by default as before
+get_inpaint_pipe()
 
 def _boot_warnings():
     # MediaPipe Tasks model (optional)
@@ -999,7 +1018,7 @@ def apply_inpaint(
     # 기본 Inpaint
     if result is None:
         if pipe is None:
-            load_pipe()
+            get_inpaint_pipe()
         yield _pack("### Stage: Running Inpaint")
         mark("base_run_start")
         try:
@@ -1215,6 +1234,61 @@ CSS = """
 .gradio-container { max-width: 1280px !important; }
 """
 
+# -----------------------------------------------------------------------------
+# Text-to-Image Generation (FLUX)
+# -----------------------------------------------------------------------------
+
+def generate_image(prompt, width, height, steps, seed):
+    global txt2img_pipe
+    
+    if not prompt:
+         return None, "Error: Prompt is required."
+
+    msg = switch_mode("generate")
+    yield None, f"{msg}..."
+    
+    pipe = get_txt2img_pipe()
+    if pipe is None:
+        return None, "Error: Failed to load FLUX model."
+
+    # Seed
+    s = int(seed)
+    if s == -1:
+        s = int(torch.randint(0, 2**32, (1,)).item())
+    gen = torch.Generator(device="cpu").manual_seed(s)
+    
+    print(f"[GEN] Prompt: {prompt}")
+    print(f"[GEN] Size: {width}x{height}, Steps: {steps}, Seed: {s}")
+    yield None, f"Generating ({width}x{height}, {steps} steps)..."
+    
+    try:
+        image = pipe(
+            prompt=prompt,
+            width=width,
+            height=height,
+            num_inference_steps=steps,
+            generator=gen,
+            guidance_scale=0.0 # FLUX Schnell uses 0 guidance usually, or 3.5 for Dev. Schnell is 0.
+        ).images[0]
+        
+        return image, f"Success! Seed: {s}"
+        
+    except Exception as e:
+        err = str(e)
+        print(f"[GEN] Failed: {err}")
+        if "out of memory" in err.lower():
+            try:
+                hard_clear_vram()
+            except: 
+                pass
+            return None, "Error: OOM. VRAM cleared. Try smaller size."
+        return None, f"Error: {err}"
+
+def send_to_editor(img, current_working_long):
+    if img is None:
+        return None, None, "No image to send.", "Error: Generate an image first."
+    return on_upload(img, current_working_long)
+
 # (Public repo) Admin unlock helpers removed.
 
 def build_ui():
@@ -1343,22 +1417,24 @@ def build_ui():
                     btn_unload_aux = gr.Button("Unload Aux")
                     btn_hard_clear = gr.Button("🔥 Hard Clear")
 
-        # Main layout: Result on top-left, Tabs on right
-        with gr.Row():
-            with gr.Column(scale=7):
-                with gr.Group():
-                    gr.Markdown(f"### {t('en','result')}")
-                    output = gr.Image(height=520)
-                    run_status = gr.Textbox(lines=2, label=t("en", "run_status"))
+        # Main layout: Tabs for modes
+        with gr.Tabs():
+            with gr.TabItem("Image Editing"):
+                with gr.Row():
+                    with gr.Column(scale=7):
+                        with gr.Group():
+                            gr.Markdown(f"### {t('en','result')}")
+                            output = gr.Image(height=520)
+                            run_status = gr.Textbox(lines=2, label=t("en", "run_status"))
 
-                with gr.Group():
-                    gr.Markdown(f"### {t('en','working')}")
-                    input_image = gr.Image(type="pil", height=420)
+                        with gr.Group():
+                            gr.Markdown(f"### {t('en','working')}")
+                            input_image = gr.Image(type="pil", height=420)
 
-            with gr.Column(scale=5):
-                with gr.Tabs():
-                    with gr.TabItem("Welcome"):
-                        gr.Markdown("""
+                    with gr.Column(scale=5):
+                        with gr.Tabs():
+                            with gr.TabItem("Welcome"):
+                                gr.Markdown("""
 ### Welcome
 
 This is a **local SDXL inpainting demo** (portfolio-friendly).
@@ -1382,58 +1458,76 @@ This is a **local SDXL inpainting demo** (portfolio-friendly).
 - Use `LOW_VRAM=1`, `AUTO_UNLOAD_AUX=1`
 """)
 
-                    with gr.TabItem("Mask"):
-                        gr.Markdown(f"### {t('en','auto_mask')}")
-                        auto_target = gr.Dropdown(["top", "pants", "hair", "background", "person", "auto"], value="top", label="Auto mask target")
-                        auto_gallery = gr.Gallery(columns=4, height=320)
-                        auto_status = gr.Textbox(lines=2)
+                            with gr.TabItem("Mask"):
+                                gr.Markdown(f"### {t('en','auto_mask')}")
+                                auto_target = gr.Dropdown(["top", "pants", "hair", "background", "person", "auto"], value="top", label="Auto mask target")
+                                auto_gallery = gr.Gallery(columns=4, height=320)
+                                auto_status = gr.Textbox(lines=2)
+                                with gr.Row():
+                                    btn_auto = gr.Button(t("en", "auto_mask_btn"))
+                                    btn_clear = gr.Button(t("en", "clear_mask"))
+
+                                active_mask_md = gr.Markdown(_mask_source_text())
+                                with gr.Row():
+                                    btn_use_manual = gr.Button("Use Manual")
+                                    btn_use_auto = gr.Button("Use Auto")
+
+                                with gr.Group():
+                                    gr.Markdown(f"### {t('en','mask')}")
+                                    mask_overlay = gr.Image(type="numpy", height=220)
+                                    selected_mask_preview = gr.Image(type="numpy", height=300)
+
+
+                            with gr.TabItem("Prompt"):
+                                auto_enrich = gr.Checkbox(value=True, label=t("en", "auto_enrich"))
+                                edit_mode = gr.Dropdown(choices=get_edit_mode_choices(), value="Wear / Change Clothes")
+                                prompt = gr.Textbox(lines=3, label=t("en", "pos"))
+                                negative = gr.Textbox(lines=3, label=t("en", "neg"))
+                                preview_btn = gr.Button(t("en", "prompt_check"), variant="secondary")
+                                preview_output = gr.Markdown(value="")
+                                positive_final_preview = gr.Textbox(lines=3, interactive=False, label=t("en", "final_prompt"))
+
+                            with gr.TabItem("Settings"):
+                                # Performance + VRAM settings are always visible in public
+                                if PUBLIC_DEMO:
+                                    working_long_side = gr.Slider(512, PUBLIC_MAX_LONG_SIDE, value=min(896, PUBLIC_MAX_LONG_SIDE), step=64, label=t("en", "working_long"))
+                                    steps = gr.Slider(10, PUBLIC_MAX_STEPS, value=min(18, PUBLIC_MAX_STEPS), label=t("en", "steps"))
+                                else:
+                                    working_long_side = gr.Slider(512, 1536, value=1024, step=64, label=t("en", "working_long"))
+                                    steps = gr.Slider(10, 60, value=28, label=t("en", "steps"))
+
+                                sam_model = gr.Dropdown(["vit_b", "vit_h"], value="vit_b", label=t("en", "sam"))
+                                mask_expand = gr.Slider(0, 40, value=10, label=t("en", "mask_expand"))
+                                mask_blur = gr.Slider(0, 40, value=18, label=t("en", "mask_blur"))
+                                strength = gr.Slider(0.3, 0.95, value=0.55, label=t("en", "strength"))
+                                guidance = gr.Slider(1.0, 12.0, value=7.0, label=t("en", "guidance"))
+                                seed = gr.Number(value=-1, label=t("en", "seed"))
+                                seed_display = gr.Textbox(label=t("en", "used_seed"), interactive=False)
+
+                                with gr.Row():
+                                    use_controlnet = gr.Checkbox(label=t("en", "use_cn"), value=False)
+                                    controlnet_type = gr.Dropdown(["depth", "openpose", "inpaint"], value="depth", label=t("en", "cn_type"))
+
+                                do_refine = gr.Checkbox(label=t("en", "refine"), value=False, interactive=True)
+                                btn_apply = gr.Button(t("en", "apply"), variant="primary")
+
+            with gr.TabItem("Text to Image (FLUX)"):
+                with gr.Row():
+                    with gr.Column(scale=5):
+                        t2i_prompt = gr.Textbox(lines=4, label="Prompt", placeholder="Describe the image you want to generate...")
                         with gr.Row():
-                            btn_auto = gr.Button(t("en", "auto_mask_btn"))
-                            btn_clear = gr.Button(t("en", "clear_mask"))
-
-                        active_mask_md = gr.Markdown(_mask_source_text())
+                            t2i_width = gr.Slider(256, 1536, value=1024, step=16, label="Width")
+                            t2i_height = gr.Slider(256, 1536, value=1024, step=16, label="Height")
                         with gr.Row():
-                            btn_use_manual = gr.Button("Use Manual")
-                            btn_use_auto = gr.Button("Use Auto")
+                            t2i_steps = gr.Slider(1, 12, value=4, step=1, label="Steps (Schnell: 4 recommended)")
+                            t2i_seed = gr.Number(value=-1, label="Seed")
+                        
+                        t2i_btn = gr.Button("Generate Image", variant="primary")
+                        t2i_msg = gr.Textbox(label="Status")
+                        t2i_send = gr.Button("Send to Image Editor ➡️")
 
-                        with gr.Group():
-                            gr.Markdown(f"### {t('en','mask')}")
-                            mask_overlay = gr.Image(type="numpy", height=220)
-                            selected_mask_preview = gr.Image(type="numpy", height=300)
-
-
-                    with gr.TabItem("Prompt"):
-                        auto_enrich = gr.Checkbox(value=True, label=t("en", "auto_enrich"))
-                        edit_mode = gr.Dropdown(choices=get_edit_mode_choices(), value="Wear / Change Clothes")
-                        prompt = gr.Textbox(lines=3, label=t("en", "pos"))
-                        negative = gr.Textbox(lines=3, label=t("en", "neg"))
-                        preview_btn = gr.Button(t("en", "prompt_check"), variant="secondary")
-                        preview_output = gr.Markdown(value="")
-                        positive_final_preview = gr.Textbox(lines=3, interactive=False, label=t("en", "final_prompt"))
-
-                    with gr.TabItem("Settings"):
-                        # Performance + VRAM settings are always visible in public
-                        if PUBLIC_DEMO:
-                            working_long_side = gr.Slider(512, PUBLIC_MAX_LONG_SIDE, value=min(896, PUBLIC_MAX_LONG_SIDE), step=64, label=t("en", "working_long"))
-                            steps = gr.Slider(10, PUBLIC_MAX_STEPS, value=min(18, PUBLIC_MAX_STEPS), label=t("en", "steps"))
-                        else:
-                            working_long_side = gr.Slider(512, 1536, value=1024, step=64, label=t("en", "working_long"))
-                            steps = gr.Slider(10, 60, value=28, label=t("en", "steps"))
-
-                        sam_model = gr.Dropdown(["vit_b", "vit_h"], value="vit_b", label=t("en", "sam"))
-                        mask_expand = gr.Slider(0, 40, value=10, label=t("en", "mask_expand"))
-                        mask_blur = gr.Slider(0, 40, value=18, label=t("en", "mask_blur"))
-                        strength = gr.Slider(0.3, 0.95, value=0.55, label=t("en", "strength"))
-                        guidance = gr.Slider(1.0, 12.0, value=7.0, label=t("en", "guidance"))
-                        seed = gr.Number(value=-1, label=t("en", "seed"))
-                        seed_display = gr.Textbox(label=t("en", "used_seed"), interactive=False)
-
-                        with gr.Row():
-                            use_controlnet = gr.Checkbox(label=t("en", "use_cn"), value=False)
-                            controlnet_type = gr.Dropdown(["depth", "openpose", "inpaint"], value="depth", label=t("en", "cn_type"))
-
-                        do_refine = gr.Checkbox(label=t("en", "refine"), value=False, interactive=True)
-                        btn_apply = gr.Button(t("en", "apply"), variant="primary")
+                    with gr.Column(scale=7):
+                        t2i_output = gr.Image(label="Generated Image", height=600)
 
         # Events
         input_image.upload(fn=on_upload, inputs=[input_image, working_long_side], outputs=[input_image, selected_mask_preview, auto_status, global_status])
@@ -1462,6 +1556,21 @@ This is a **local SDXL inpainting demo** (portfolio-friendly).
 
         btn_use_manual.click(fn=use_manual_mask, inputs=None, outputs=[active_mask_md, mask_overlay, selected_mask_preview])
         btn_use_auto.click(fn=use_auto_mask, inputs=None, outputs=[active_mask_md, mask_overlay, selected_mask_preview])
+        
+        # T2I Events
+        t2i_btn.click(
+            fn=generate_image,
+            inputs=[t2i_prompt, t2i_width, t2i_height, t2i_steps, t2i_seed],
+            outputs=[t2i_output, t2i_msg]
+        )
+        t2i_btn.click(fn=lambda: (get_vram_text(),), inputs=None, outputs=[vram_box])
+        
+        t2i_send.click(
+            fn=send_to_editor,
+            inputs=[t2i_output, working_long_side],
+            outputs=[input_image, selected_mask_preview, auto_status, global_status]
+        )
+        # Also switch tab? Gradio tabs handling is tricky without state, but user can click manually.
 
         def _notify(msg: str):
             try:
@@ -1547,12 +1656,28 @@ if __name__ == "__main__":
     else:
         _queue_compat(demo, max_size=10, concurrency=1)
 
-    demo.launch(
-        server_name="127.0.0.1",
-        server_port=7860,
-        debug=True,
-        share=False,
-        prevent_thread_lock=True,
-        css=CSS,
-        theme=theme
-    )
+    # Try to find an open port
+    port = 7860
+    max_retries = 10
+    for i in range(max_retries):
+        try:
+            print(f"[BOOT] Attempting to launch on port {port}...")
+            demo.launch(
+                server_name="127.0.0.1",
+                server_port=port,
+                debug=True,
+                share=False,
+                prevent_thread_lock=True,
+                css=CSS,
+                theme=theme
+            )
+            break
+        except OSError as e:
+            if "port" in str(e).lower():
+                print(f"[BOOT] Port {port} is busy, trying {port+1}...")
+                port += 1
+            else:
+                raise e
+        except Exception as e:
+            print(f"[BOOT] Launch failed: {e}")
+            raise e
