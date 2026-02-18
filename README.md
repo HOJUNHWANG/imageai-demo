@@ -1,87 +1,117 @@
-# ImageAI Demo (SDXL Inpaint)
+# ImageAI: Advanced Generative Image Processing System
 
-AI 기반 이미지 편집 데모 앱입니다. **마스크 기반(inpainting)** 워크플로우를 중심으로,
-SDXL + (선택) ControlNet + (선택) SAM/MediaPipe 자동 마스크를 결합했습니다.
+![Python](https://img.shields.io/badge/Python-3.11-blue?logo=python&logoColor=white)
+![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-EE4C2C?logo=pytorch&logoColor=white)
+![Diffusers](https://img.shields.io/badge/HuggingFace-Diffusers-FFD21E?logo=huggingface&logoColor=black)
+![Gradio](https://img.shields.io/badge/Gradio-UI-orange?logo=gradio&logoColor=white)
+![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux-lightgrey)
 
-- UI: Gradio (로컬 실행)
-- 모델/가중치 파일은 **레포에 포함되어 있지 않습니다** (직접 다운로드 필요)
-- (선택) 데모 이미지/스크린샷은 `assets/` 폴더에 추가하는 것을 권장합니다.
+> **A high-performance local AI application integrating Stable Diffusion XL (Inpainting) and FLUX.1-schnell (Generation) into a unified workflow.** Designed for creative professionals, featuring smart VRAM management and advanced masking tools.
 
-## 주요 기능 (코드 기준)
-- **Inpainting 편집**: 마스크 영역만 생성/수정
-- **마스크 생성**
-  - Manual: **SAM** 클릭 기반 마스크 (vit_b / vit_h)
-  - Auto: **MediaPipe Tasks** 기반 semantic 마스크 (상의/소매/바지/머리/배경)
-- **ControlNet (선택)**: depth / openpose 로컬 로딩 경로 지원
-- **Refine pass (선택)**: img2img 기반 톤/디테일 정리
-- **Prompt enrich**: positive/negative 자동 확장 + Preview 기능
-- **Seed 제어**: 고정/랜덤
-- **VRAM 가드레일**: public demo 모드에서 long side / steps 제한
+---
 
-> 참고: README에는 “public demo에서 특정 기능 비활성화”를 언급하지만,
-> 현재 코드상으로는 주로 **리소스(해상도/스텝/큐) 제한 형태**로 구현되어 있습니다.
+## 🚀 Key Features
 
-## 요구사항
+### 1. Hybrid Generative Pipeline
+Seamlessly switch between two state-of-the-art models within a single interface:
+- **Text-to-Image (FLUX.1-schnell)**: Ultra-fast 4-step generation for high-fidelity base images.
+- **Inpainting (SDXL 1.0)**: Precision editing using mask-based diffusion for realistic object modification.
+
+### 2. Smart VRAM Optimization (Consumer GPU Friendly)
+Engineered to run heavy transformer models on consumer GPUs (e.g., RTX 3080 Ti, 12GB VRAM):
+- **Dynamic Model Offloading**: Automatically unloads idle pipelines (e.g., checks if user is Editing vs Generating) to free up VRAM.
+- **Memory-Efficient Precision**: Utilizes `bfloat16` (if available) or `float16` to halve memory footprint without sacrificing quality.
+- **Aggressive Garbage Collection**: Implements a custom `hard_clear_vram()` mechanism to recover memory from fragmented CUDA caches during heavy workloads.
+
+### 3. Advanced Masking System
+Combines multiple AI vision models for precise selection:
+- **SAM (Segment Anything Model)**: Click-to-segment functionality for manual, pixel-perfect masks.
+- **MediaPipe Integration**: Semantic segmentation to automatically mask specific body parts (Head, Face, Clothes, Background) with one click.
+
+### 4. Robust Engineering
+- **Dependency Isolation**: Resolves complex version conflicts (e.g., `transformers` vs `huggingface_hub`) via automated environment patches.
+- **Port Conflict Resolution**: Auto-detects available ports (7860-7870) to ensure reliable startup.
+
+---
+
+## 🛠️ Technical Architecture
+
+```mermaid
+graph TD
+    User[User Interface (Gradio)] -->|Select Tab| ModeManager{Mode Switcher}
+    
+    ModeManager -->|Generate Tab| FLUX[FLUX.1-schnell Pipeline]
+    ModeManager -->|Edit Tab| SDXL[SDXL Inpaint Pipeline]
+    
+    subgraph "VRAM Optimization Layer"
+        FLUX -.->|Unload| CPU[System RAM]
+        SDXL -.->|Unload| CPU
+        CPU -.->|Load on Demand| GPU[GPU VRAM (12GB)]
+    end
+    
+    subgraph "Masking Engine"
+        SDXL --> SAM[Segment Anything]
+        SDXL --> MP[MediaPipe Semantic]
+    end
+```
+
+---
+
+## 📦 Installation
+
+### Prerequisites
 - Python 3.11
-- (권장) NVIDIA GPU + CUDA (예: RTX 30xx, VRAM 12GB+)
-- CPU도 가능하지만 매우 느릴 수 있습니다.
+- NVIDIA GPU (Recommended: 12GB+ VRAM)
+- CUDA Toolkit 11.8+
 
-## 설치 (Windows 기준)
-```bash
-python -m venv venv311
-.\venv311\Scripts\activate
+### Setup
+1. **Clone the repository**
+   ```bash
+   git clone https://github.com/HOJUNHWANG/imageai-demo.git
+   cd imageai-demo
+   ```
 
-pip install -r requirements.txt
-# SAM 설치 (권장: git 설치)
-pip install git+https://github.com/facebookresearch/segment-anything.git
-```
+2. **Create Virtual Environment**
+   ```bash
+   python -m venv venv311
+   .\venv311\Scripts\activate
+   ```
 
-## 모델/가중치 준비(직접 다운로드)
-아래 파일/폴더는 예시 경로이며, **코드에서 참조하는 기본 경로**는 다음과 같습니다.
+3. **Install Dependencies**
+   ```bash
+   pip install -r requirements.txt
+   # Install Segment Anything (SAM) manually
+   pip install git+https://github.com/facebookresearch/segment-anything.git
+   ```
 
-- SDXL inpaint 베이스(기본): `diffusers/stable-diffusion-xl-1.0-inpainting-0.1`
-- (옵션) Juggernaut XL safetensors 경로(코드 기준):
-  - `models/stable-diffusion-xl/juggernautXL_ragnarokBy.safetensors`
-- (옵션) ControlNet 로컬 폴더:
-  - `models/ControlNet/controlnet-depth-sdxl-1.0`
-  - `models/ControlNet/controlnet-openpose-sdxl-1.0`
-- (옵션) SAM weights:
-  - `weights/sam_vit_b_01ec64.pth`
-  - `weights/sam_vit_h_4b8939.pth`
-- MediaPipe: 첫 실행 시 자동 다운로드
+4. **Authentication (For FLUX Model)**
+   This project uses `FLUX.1-schnell`, a gated model.
+   ```bash
+   huggingface-cli login
+   # Enter your Hugging Face Access Token with 'Write' permissions
+   ```
 
-## 실행
-```bash
-python app.py
-```
-브라우저에서 열기: http://127.0.0.1:7860
+---
 
-### UI만 빠르게 확인하기 (모델 없이)
-```bash
-# Windows cmd/powershell 환경변수 예시
-set MOCK_INPAINT=1
-python app.py
-```
+## 🖥️ Usage
 
-## Public demo 설정 (환경변수)
-코드에 실제로 존재하는 플래그 기준:
-- `PUBLIC_DEMO=1` (기본값): 공개 데모 가드레일 ON
-- `PUBLIC_MAX_LONG_SIDE=896` (기본값)
-- `PUBLIC_MAX_STEPS=22` (기본값)
-- `PUBLIC_MAX_QUEUE=10` (기본값)
-- `PUBLIC_CONCURRENCY=1` (기본값)
-- `MOCK_INPAINT=1`: 모델 실행 없이 UI/파이프라인만 빠르게 테스트
+1. **Start the Application**
+   ```bash
+   python app.py
+   ```
+2. **Open Browser**
+   Access the UI at `http://127.0.0.1:7860`.
 
-### VRAM 안정화(두 번 연속 실행 문제 대응)
-- `LOW_VRAM=1`: attention/vae slicing/tiling 활성화(조금 느려지지만 안정적)
-- `CPU_OFFLOAD=1`: diffusers CPU offload(더 안정적, 느릴 수 있음)
-- `AUTO_UNLOAD_AUX=1`: 실행 후 ControlNet/Refine 파이프라인 자동 언로드(연속 실행 안정화)
+3. **Workflow Example**
+   - **Step 1 (Generate)**: Go to "Text to Image" tab. Enter "cyberpunk street", click Generate.
+   - **Step 2 (Transfer)**: Click "Send to Image Editor".
+   - **Step 3 (Edit)**: In "Image Editing" tab, use "Auto Mask" to select the sky. Enter "starry night sky" and Apply.
 
-`.env.example`을 참고해 `.env`를 만들 수 있습니다. **토큰/키는 절대 커밋하지 마세요.**
+---
 
-## 알려진 이슈/주의
-- CPU 모드: ControlNet/SAM 사용 시 RAM 사용량이 커질 수 있습니다.
-- Auto mask(MediaPipe)는 SAM 대비 정밀도가 낮을 수 있습니다.
+## 📝 License
+MIT License. See `LICENSE` for details.
 
-## License
-MIT License (see `LICENSE`).
+---
+
+*This project was developed to demonstrate advanced integration of large-scale generative models in a local environment.*

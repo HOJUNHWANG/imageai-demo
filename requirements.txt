@@ -1,20 +1,23 @@
 gradio>=4.0.0
 
-torch
+torch>=2.0.0
 torchvision
 
-diffusers>=0.30.0
-transformers
-accelerate
+# Core Model Pipeline
+diffusers>=0.36.0
+transformers>=4.46.0
+accelerate>=0.26.0
+huggingface_hub>=1.4.1
 
+# Utilities
 timm
 numpy
 pillow
 psutil
-mediapipe
+mediapipe>=0.10.9
+opencv-python-headless>=4.8.0
 
-# Optional (recommended)
-opencv-python
-
-# NOTE: Segment Anything (SAM) is recommended to install via git:
-#   pip install git+https://github.com/facebookresearch/segment-anything.git
+# Optional Dependencies
+protobuf>=3.20.0
+sentencepiece>=0.1.99
+bitsandbytes>=0.40.0  # Recommended for memory efficiency
