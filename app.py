@@ -1511,7 +1511,7 @@ This is a **local SDXL inpainting demo** (portfolio-friendly).
                                 do_refine = gr.Checkbox(label=t("en", "refine"), value=False, interactive=True)
                                 btn_apply = gr.Button(t("en", "apply"), variant="primary")
 
-            with gr.TabItem("Text to Image (FLUX)"):
+            with gr.TabItem("Text to Image (FLUX)") as t2i_tab:
                 with gr.Row():
                     with gr.Column(scale=5):
                         t2i_prompt = gr.Textbox(lines=4, label="Prompt", placeholder="Describe the image you want to generate...")
@@ -1570,7 +1570,17 @@ This is a **local SDXL inpainting demo** (portfolio-friendly).
             inputs=[t2i_output, working_long_side],
             outputs=[input_image, selected_mask_preview, auto_status, global_status]
         )
-        # Also switch tab? Gradio tabs handling is tricky without state, but user can click manually.
+        # Auto-switch to FLUX mode when tab is selected
+        def _on_flux_tab_select():
+            if CURRENT_MODE != "generate":
+                yield "Switching to FLUX... (Model will download if not present)"
+                msg = switch_mode("generate")
+                yield msg
+            else:
+                yield "Ready (FLUX active)"
+
+        t2i_tab.select(fn=_on_flux_tab_select, inputs=None, outputs=[t2i_msg])
+
 
         def _notify(msg: str):
             try:
