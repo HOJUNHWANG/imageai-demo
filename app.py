@@ -529,14 +529,20 @@ def parse_prompt_simple(prompt: str) -> dict:
     p = (prompt or "").lower()
 
     sleeve_kw = ["sleeve", "sleeveless", "tank", "crop top", "short sleeve", "long sleeve"]
-    top_kw = ["shirt", "t-shirt", "top", "blouse", "jacket", "hoodie", "sweater"]
+    top_kw = ["shirt", "t-shirt", "top", "blouse", "jacket", "hoodie", "sweater", "coat"]
+    pants_kw = ["pants", "jeans", "trousers", "shorts", "skirt", "leggings", "dress"]
+    hair_kw = ["hair", "hairstyle", "bangs", "blonde", "brunette"]
 
-    if any(k in p for k in sleeve_kw):
+    if any(k in p for k in pants_kw):
+        target = "pants"
+    elif any(k in p for k in hair_kw):
+        target = "hair"
+    elif any(k in p for k in sleeve_kw):
         target = "sleeve"
     elif any(k in p for k in top_kw):
         target = "top"
     else:
-        target = "top"
+        target = "top" # default fallback
 
     color = None
     for c in ["black", "white", "red", "blue", "green", "gray", "brown", "beige"]:
@@ -893,6 +899,7 @@ def apply_inpaint(
     edit_mode: str,
     use_controlnet: bool = False,
     controlnet_type: str = "depth",
+    cn_scale: float = 0.45,
     do_refine: bool = False,
 ):
     global pipe, PIPE, controlnet_pipes, img2img_pipe
@@ -1017,7 +1024,7 @@ def apply_inpaint(
                     image=image_pil,
                     mask_image=mask_pil,
                     control_image=image_pil,
-                    controlnet_conditioning_scale=0.65,
+                    controlnet_conditioning_scale=float(cn_scale),
                     num_inference_steps=steps,
                     strength=strength,
                     guidance_scale=guidance,
@@ -1568,6 +1575,7 @@ This is a **local SDXL inpainting demo** (portfolio-friendly).
                                 with gr.Row():
                                     use_controlnet = gr.Checkbox(label=t("en", "use_cn"), value=False)
                                     controlnet_type = gr.Dropdown(["depth", "openpose", "inpaint"], value="depth", label=t("en", "cn_type"))
+                                cn_scale = gr.Slider(0.1, 1.0, value=0.45, step=0.05, label="ControlNet Strength (0.3~0.5 for clothes)")
 
                                 do_refine = gr.Checkbox(label="🔍 Refine (Slower: avoid with low VRAM)", value=False, interactive=True)
                                 btn_apply = gr.Button(t("en", "apply"), variant="primary")
@@ -1608,7 +1616,7 @@ This is a **local SDXL inpainting demo** (portfolio-friendly).
             inputs=[
                 prompt, negative, steps, strength, guidance,
                 mask_expand, mask_blur, seed, auto_enrich, edit_mode,
-                use_controlnet, controlnet_type,
+                use_controlnet, controlnet_type, cn_scale,
                 do_refine,
             ],
             outputs=[output, run_status, positive_final_preview, global_status, seed_display, vram_box],
