@@ -645,7 +645,14 @@ def get_txt2img_pipe():
         
         if DEVICE == "cuda":
             # FLUX is huge, always offload to CPU when not active in a step
-            p.enable_model_cpu_offload()
+            # FLUX is huge, always offload to CPU.
+            # enable_sequential_cpu_offload is slower but saves much more VRAM than enable_model_cpu_offload
+            # This is critical for 12GB cards to avoid shared memory swapping.
+            p.enable_sequential_cpu_offload(device=DEVICE)
+            
+            # VAE slicing helps too
+            p.vae.enable_slicing()
+            p.vae.enable_tiling()
             # VAE slicing helps too
             # p.enable_vae_tiling() # Optional, verify support
         
@@ -890,12 +897,12 @@ def apply_inpaint(
 
     used_seed_str = str(seed if seed is not None and int(seed) >= 0 else "random")
     # Realtime stage indicator (Gradio streaming)
-    def _pack(stage_md: str, run_msg: str = '', final_prompt: str = ''):
+    def _pack(stage_md: str, run_msg: str = '', final_prompt: str = '') -> tuple:
         # Keep the UI responsive by yielding intermediate tuples.
         # outputs: [output, run_status, positive_final_preview, global_status, seed_display]
         # show stage in run_status during execution
         stage_line = stage_md.replace('### Stage: ', '').strip()
-        return None, (run_msg or stage_line), final_prompt, stage_md, used_seed_str
+        return None, (run_msg or stage_line), str(final_prompt or ''), stage_md, used_seed_str
 
     yield _pack('### Stage: Preparing inputs')
     if MOCK_INPAINT:
@@ -919,6 +926,9 @@ def apply_inpaint(
     # 마스크 postprocess
     mask_pp = postprocess_mask(mask_u8, int(expand_px), int(blur_px))
     mask_pil = Image.fromarray(mask_pp).convert("L")
+    if STATE.get("working_pil") is None:
+        yield _pack("### Stage: Error", "No image uploaded. Please upload an image first.")
+        return
     image_pil = STATE["working_pil"].convert("RGB")
 
     fin = build_final_prompts(prompt, negative, auto_enrich, edit_mode)
@@ -1018,7 +1028,10 @@ def apply_inpaint(
     # 기본 Inpaint
     if result is None:
         if pipe is None:
-            get_inpaint_pipe()
+            pipe = get_inpaint_pipe()  # Reassign result, otherwise pipe stays None
+        if pipe is None:
+            yield _pack("### Stage: Error", "Inpaint pipeline failed to load.")
+            return
         yield _pack("### Stage: Running Inpaint")
         mark("base_run_start")
         try:
@@ -1242,16 +1255,24 @@ def generate_image(prompt, width, height, steps, seed):
     global txt2img_pipe
     
     if not prompt:
-         return None, "Error: Prompt is required."
+        yield None, "❌ Error: Prompt is required."
+        return
 
-    msg = switch_mode("generate")
-    yield None, f"{msg}..."
-    
-    pipe = get_txt2img_pipe()
-    if pipe is None:
-        return None, "Error: Failed to load FLUX model."
+    # --- Stage 1: Model Loading ---
+    if txt2img_pipe is None:
+        yield None, "⏳ [1/4] Freeing VRAM from previous model..."
+        switch_mode("generate")
+        yield None, "⏳ [2/4] Loading FLUX.1-schnell (30~90s first time, please wait)..."
+        flux_pipe = get_txt2img_pipe()
+    else:
+        yield None, "✅ FLUX model ready. Setting up generation..."
+        flux_pipe = txt2img_pipe
 
-    # Seed
+    if flux_pipe is None:
+        yield None, "❌ Error: Failed to load FLUX model. Check terminal for error details."
+        return
+
+    # --- Stage 2: Setup ---
     s = int(seed)
     if s == -1:
         s = int(torch.randint(0, 2**32, (1,)).item())
@@ -1259,30 +1280,64 @@ def generate_image(prompt, width, height, steps, seed):
     
     print(f"[GEN] Prompt: {prompt}")
     print(f"[GEN] Size: {width}x{height}, Steps: {steps}, Seed: {s}")
-    yield None, f"Generating ({width}x{height}, {steps} steps)..."
     
+    yield None, f"⏳ [3/4] Running inference... Step 0/{steps} (first step is slowest)"
+
+    # Per-step callback to update status
+    _step_store = {"last": 0}
+
+    def _step_cb(pipe, i, t, kwargs):
+        _step_store["last"] = i + 1
+        print(f"[GEN][STEP] {i+1}/{steps}")
+        return kwargs
+
+    # --- Stage 3: Inference ---
     try:
-        image = pipe(
+        result = flux_pipe(
             prompt=prompt,
-            width=width,
-            height=height,
-            num_inference_steps=steps,
+            width=int(width),
+            height=int(height),
+            num_inference_steps=int(steps),
             generator=gen,
-            guidance_scale=0.0 # FLUX Schnell uses 0 guidance usually, or 3.5 for Dev. Schnell is 0.
-        ).images[0]
-        
-        return image, f"Success! Seed: {s}"
-        
+            guidance_scale=0.0,
+            callback_on_step_end=_step_cb,
+            callback_on_step_end_tensor_inputs=["latents"],
+        )
+        image = result.images[0]
+        yield image, f"✅ [4/4] Done! Seed: {s}"
+
+    except TypeError:
+        # Older diffusers fallback (no callback support)
+        try:
+            result = flux_pipe(
+                prompt=prompt,
+                width=int(width),
+                height=int(height),
+                num_inference_steps=int(steps),
+                generator=gen,
+                guidance_scale=0.0,
+            )
+            image = result.images[0]
+            yield image, f"✅ Done! Seed: {s}"
+        except Exception as e2:
+            err = str(e2)
+            print(f"[GEN] Failed (fallback): {err}")
+            if "out of memory" in err.lower():
+                try: hard_clear_vram()
+                except: pass
+                yield None, "❌ Out of Memory. VRAM cleared. Try a smaller size."
+            else:
+                yield None, f"❌ Error: {err}"
+
     except Exception as e:
         err = str(e)
         print(f"[GEN] Failed: {err}")
         if "out of memory" in err.lower():
-            try:
-                hard_clear_vram()
-            except: 
-                pass
-            return None, "Error: OOM. VRAM cleared. Try smaller size."
-        return None, f"Error: {err}"
+            try: hard_clear_vram()
+            except: pass
+            yield None, "❌ Out of Memory. VRAM cleared. Try a smaller size."
+        else:
+            yield None, f"❌ Error: {err}"
 
 def send_to_editor(img, current_working_long):
     if img is None:
