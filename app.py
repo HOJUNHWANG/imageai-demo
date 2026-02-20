@@ -580,6 +580,7 @@ def get_inpaint_pipe():
 
     try:
         if os.path.exists(model_path):
+            print(f"[PIPE] Loading from local file: {model_path}")
             p = StableDiffusionXLInpaintPipeline.from_single_file(
                 model_path,
                 torch_dtype=dtype,
@@ -588,6 +589,9 @@ def get_inpaint_pipe():
                 safety_checker=None,
             )
         else:
+            print(f"[PIPE] Local model not found at '{model_path}'.")
+            print(f"[PIPE] Auto-downloading base SDXL model from HuggingFace: {model_path}")
+            print(f"[PIPE] Tip: Place a custom .safetensors file at: {JUGGERNAUT_INPAINT}")
             p = StableDiffusionXLInpaintPipeline.from_pretrained(
                 model_path,
                 torch_dtype=dtype,
@@ -1088,6 +1092,8 @@ def apply_inpaint(
                     use_safetensors=True,
                 )
                 img2img_pipe.to(DEVICE)
+                if DEVICE == "cuda":
+                    img2img_pipe.enable_model_cpu_offload()
                 print("[REFINE] Img2Img pipeline loaded")
             mark("refine_load_end")
 
@@ -1096,8 +1102,8 @@ def apply_inpaint(
                 prompt=positive_final,
                 prompt_2=prompt_2,
                 image=result,
-                strength=0.20,
-                num_inference_steps=10,
+                strength=0.15,
+                num_inference_steps=6,
                 guidance_scale=guidance,
                 generator=gen,
             ).images[0]
@@ -1232,7 +1238,7 @@ def apply_inpaint(
 
     # VRAM is displayed in the dedicated VRAM box; keep status focused.
 
-    yield final_image, run_msg, positive_final, global_status, used_seed_str
+    yield final_image, run_msg, positive_final, global_status, used_seed_str, get_vram_text()
     return
 
 # -----------------------------------------------------------------------------
@@ -1255,21 +1261,21 @@ def generate_image(prompt, width, height, steps, seed):
     global txt2img_pipe
     
     if not prompt:
-        yield None, "❌ Error: Prompt is required."
+        yield None, "❌ Error: Prompt is required.", get_vram_text()
         return
 
     # --- Stage 1: Model Loading ---
     if txt2img_pipe is None:
-        yield None, "⏳ [1/4] Freeing VRAM from previous model..."
+        yield None, "⏳ [1/4] Freeing VRAM from previous model...", get_vram_text()
         switch_mode("generate")
-        yield None, "⏳ [2/4] Loading FLUX.1-schnell (30~90s first time, please wait)..."
+        yield None, "⏳ [2/4] Loading FLUX.1-schnell (30~90s first time, please wait)...", get_vram_text()
         flux_pipe = get_txt2img_pipe()
     else:
-        yield None, "✅ FLUX model ready. Setting up generation..."
+        yield None, "✅ FLUX model ready. Setting up generation...", get_vram_text()
         flux_pipe = txt2img_pipe
 
     if flux_pipe is None:
-        yield None, "❌ Error: Failed to load FLUX model. Check terminal for error details."
+        yield None, "❌ Error: Failed to load FLUX model. Check terminal for error details.", get_vram_text()
         return
 
     # --- Stage 2: Setup ---
@@ -1281,7 +1287,7 @@ def generate_image(prompt, width, height, steps, seed):
     print(f"[GEN] Prompt: {prompt}")
     print(f"[GEN] Size: {width}x{height}, Steps: {steps}, Seed: {s}")
     
-    yield None, f"⏳ [3/4] Running inference... Step 0/{steps} (first step is slowest)"
+    yield None, f"⏳ [3/4] Running inference... Step 0/{steps} (first step is slowest)", get_vram_text()
 
     # Per-step callback to update status
     _step_store = {"last": 0}
@@ -1304,7 +1310,7 @@ def generate_image(prompt, width, height, steps, seed):
             callback_on_step_end_tensor_inputs=["latents"],
         )
         image = result.images[0]
-        yield image, f"✅ [4/4] Done! Seed: {s}"
+        yield image, f"✅ [4/4] Done! Seed: {s}", get_vram_text()
 
     except TypeError:
         # Older diffusers fallback (no callback support)
@@ -1318,16 +1324,16 @@ def generate_image(prompt, width, height, steps, seed):
                 guidance_scale=0.0,
             )
             image = result.images[0]
-            yield image, f"✅ Done! Seed: {s}"
+            yield image, f"✅ Done! Seed: {s}", get_vram_text()
         except Exception as e2:
             err = str(e2)
             print(f"[GEN] Failed (fallback): {err}")
             if "out of memory" in err.lower():
                 try: hard_clear_vram()
                 except: pass
-                yield None, "❌ Out of Memory. VRAM cleared. Try a smaller size."
+                yield None, "❌ Out of Memory. VRAM cleared. Try a smaller size.", get_vram_text()
             else:
-                yield None, f"❌ Error: {err}"
+                yield None, f"❌ Error: {err}", get_vram_text()
 
     except Exception as e:
         err = str(e)
@@ -1335,9 +1341,9 @@ def generate_image(prompt, width, height, steps, seed):
         if "out of memory" in err.lower():
             try: hard_clear_vram()
             except: pass
-            yield None, "❌ Out of Memory. VRAM cleared. Try a smaller size."
+            yield None, "❌ Out of Memory. VRAM cleared. Try a smaller size.", get_vram_text()
         else:
-            yield None, f"❌ Error: {err}"
+            yield None, f"❌ Error: {err}", get_vram_text()
 
 def send_to_editor(img, current_working_long):
     if img is None:
@@ -1563,10 +1569,10 @@ This is a **local SDXL inpainting demo** (portfolio-friendly).
                                     use_controlnet = gr.Checkbox(label=t("en", "use_cn"), value=False)
                                     controlnet_type = gr.Dropdown(["depth", "openpose", "inpaint"], value="depth", label=t("en", "cn_type"))
 
-                                do_refine = gr.Checkbox(label=t("en", "refine"), value=False, interactive=True)
+                                do_refine = gr.Checkbox(label="🔍 Refine (Slower: avoid with low VRAM)", value=False, interactive=True)
                                 btn_apply = gr.Button(t("en", "apply"), variant="primary")
 
-            with gr.TabItem("Text to Image (FLUX)") as t2i_tab:
+            with gr.TabItem("🎨 Text to Image (FLUX)") as t2i_tab:
                 with gr.Row():
                     with gr.Column(scale=5):
                         t2i_prompt = gr.Textbox(lines=4, label="Prompt", placeholder="Describe the image you want to generate...")
@@ -1578,7 +1584,7 @@ This is a **local SDXL inpainting demo** (portfolio-friendly).
                             t2i_seed = gr.Number(value=-1, label="Seed")
                         
                         t2i_btn = gr.Button("Generate Image", variant="primary")
-                        t2i_msg = gr.Textbox(label="Status")
+                        t2i_msg = gr.Textbox(label="ℹ️ Status", interactive=False)
                         t2i_send = gr.Button("Send to Image Editor ➡️")
 
                     with gr.Column(scale=7):
@@ -1605,9 +1611,8 @@ This is a **local SDXL inpainting demo** (portfolio-friendly).
                 use_controlnet, controlnet_type,
                 do_refine,
             ],
-            outputs=[output, run_status, positive_final_preview, global_status, seed_display],
+            outputs=[output, run_status, positive_final_preview, global_status, seed_display, vram_box],
         )
-        btn_apply.click(fn=lambda: (get_vram_text(),), inputs=None, outputs=[vram_box])
 
         btn_use_manual.click(fn=use_manual_mask, inputs=None, outputs=[active_mask_md, mask_overlay, selected_mask_preview])
         btn_use_auto.click(fn=use_auto_mask, inputs=None, outputs=[active_mask_md, mask_overlay, selected_mask_preview])
@@ -1616,9 +1621,8 @@ This is a **local SDXL inpainting demo** (portfolio-friendly).
         t2i_btn.click(
             fn=generate_image,
             inputs=[t2i_prompt, t2i_width, t2i_height, t2i_steps, t2i_seed],
-            outputs=[t2i_output, t2i_msg]
+            outputs=[t2i_output, t2i_msg, vram_box]
         )
-        t2i_btn.click(fn=lambda: (get_vram_text(),), inputs=None, outputs=[vram_box])
         
         t2i_send.click(
             fn=send_to_editor,
