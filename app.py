@@ -906,33 +906,33 @@ def apply_inpaint(
         # outputs: [output, run_status, positive_final_preview, global_status, seed_display]
         # show stage in run_status during execution
         stage_line = stage_md.replace('### Stage: ', '').strip()
-        return None, (run_msg or stage_line), str(final_prompt or ''), stage_md, used_seed_str
+        return None, (run_msg or stage_line), str(final_prompt or ''), stage_md, used_seed_str, get_vram_text()
 
-    yield _pack('### Stage: Preparing inputs')
-    if MOCK_INPAINT:
-        yield _pack("### Stage: MOCK_INPAINT", "MOCK_INPAINT mode")
+    # --- Early validation: fail fast with friendly messages ---
+    if not (prompt or "").strip():
+        yield _pack("### Stage: Error", "❌ Positive prompt is required. Please describe what you want to generate.")
         return
 
-    # Public demo guardrails are applied via UI + server-side clamps below.
+    if STATE.get("working_pil") is None:
+        yield _pack("### Stage: Error", "❌ No image uploaded. Please upload an image in the 'Working' panel first.")
+        return
+
+    mask_u8 = _get_active_mask()
+    if mask_u8 is None:
+        yield _pack("### Stage: Error", "❌ No mask selected. Use 'Auto Mask' or click the image to create a manual mask first.")
+        return
 
     # Seed 기반 generator 생성
     gen = None
     if seed is not None and int(seed) >= 0:
         gen = torch.Generator(DEVICE).manual_seed(int(seed))
 
-    # Pick active mask source
-    mask_u8 = _get_active_mask()
 
-    if mask_u8 is None:
-        yield _pack("### Stage: Error", "Mask missing")
-        return
+    yield _pack('### Stage: Preparing inputs')
 
-    # 마스크 postprocess
+    # Mask & image postprocess
     mask_pp = postprocess_mask(mask_u8, int(expand_px), int(blur_px))
     mask_pil = Image.fromarray(mask_pp).convert("L")
-    if STATE.get("working_pil") is None:
-        yield _pack("### Stage: Error", "No image uploaded. Please upload an image first.")
-        return
     image_pil = STATE["working_pil"].convert("RGB")
 
     fin = build_final_prompts(prompt, negative, auto_enrich, edit_mode)
