@@ -72,6 +72,7 @@ DEFAULT_MODEL = "diffusers/stable-diffusion-xl-1.0-inpainting-0.1"
 
 CONTROLNET_DEPTH = os.path.join(BASE_DIR, "models", "ControlNet", "controlnet-depth-sdxl-1.0")
 CONTROLNET_OPENPOSE = os.path.join(BASE_DIR, "models", "ControlNet", "controlnet-openpose-sdxl-1.0")
+CONTROLNET_CANNY = "diffusers/controlnet-canny-sdxl-1.0"
 
 MOCK_INPAINT = os.getenv("MOCK_INPAINT", "0") == "1"
 
@@ -195,23 +196,11 @@ def unload_aux_pipelines():
     global controlnet_pipes, img2img_pipe
 
     # ControlNet pipelines
-    if isinstance(controlnet_pipes, dict) and controlnet_pipes:
-        for k, p in list(controlnet_pipes.items()):
-            try:
-                if p is not None and hasattr(p, "to"):
-                    p.to("cpu")
-            except Exception:
-                pass
+    if isinstance(controlnet_pipes, dict):
         controlnet_pipes.clear()
 
     # Refine pipeline
-    if img2img_pipe is not None:
-        try:
-            if hasattr(img2img_pipe, "to"):
-                img2img_pipe.to("cpu")
-        except Exception:
-            pass
-        img2img_pipe = None
+    img2img_pipe = None
 
     gc.collect()
     if DEVICE == "cuda" and torch.cuda.is_available():
@@ -245,37 +234,19 @@ def hard_clear_vram():
         torch.cuda.synchronize()
 
         # 1) 메인 파이프라인 unload
-        if pipe is not None:
-            try:
-                pipe.to("cpu")
-            except Exception:
-                pass
         pipe = None
         PIPE = None
 
         # 1-b) Txt2Img 파이프라인 unload
-        if txt2img_pipe is not None:
-            try:
-                txt2img_pipe.to("cpu")
-            except Exception:
-                pass
         txt2img_pipe = None
 
         # 2) ControlNet 파이프들 unload
-        if isinstance(controlnet_pipes, dict) and controlnet_pipes:
-            for k, p in list(controlnet_pipes.items()):
-                try:
-                    p.to("cpu")
-                except Exception:
-                    pass
+        if isinstance(controlnet_pipes, dict):
             controlnet_pipes.clear()
+        else:
+            controlnet_pipes = {}
 
         # 3) Refine(img2img) unload
-        if img2img_pipe is not None:
-            try:
-                img2img_pipe.to("cpu")
-            except Exception:
-                pass
         img2img_pipe = None
 
         # 4) 파이썬/토치 정리
@@ -977,12 +948,14 @@ def apply_inpaint(
 
     # ControlNet 분기
     if use_controlnet:
-        if controlnet_type == "depth":
+        if controlnet_type == "canny":
+            repo = CONTROLNET_CANNY
+        elif controlnet_type == "depth":
             repo = CONTROLNET_DEPTH
         elif controlnet_type == "openpose":
             repo = CONTROLNET_OPENPOSE
         else:
-            repo = "lllyasviel/control_v11p_sd15_inpaint"
+            repo = CONTROLNET_CANNY
 
         # NOTE: key에 strength 넣으면 캐시가 과하게 늘어남 → type만으로 캐시
         key = f"{controlnet_type}"
@@ -995,7 +968,7 @@ def apply_inpaint(
                     repo,
                     torch_dtype=torch.float16 if DEVICE == "cuda" else torch.float32,
                     use_safetensors=True,
-                    local_files_only=True
+                    local_files_only=False
                 )
                 controlnet_pipes[key] = StableDiffusionXLControlNetInpaintPipeline.from_single_file(
                     JUGGERNAUT_INPAINT,
@@ -1015,6 +988,18 @@ def apply_inpaint(
             print(f"[CONTROLNET] Using {controlnet_type} | type={type(p).__name__}")
             yield _pack(f"### Stage: Running ControlNet ({controlnet_type})")
             mark("cn_run_start")
+            # Preprocess image based on type
+            c_img = image_pil
+            if controlnet_type == "canny":
+                if cv2 is not None:
+                    arr = np.array(image_pil)
+                    arr = cv2.Canny(arr, 100, 200)
+                    arr = arr[:, :, None]
+                    arr = np.concatenate([arr, arr, arr], axis=2)
+                    c_img = Image.fromarray(arr)
+                else:
+                    c_img = image_pil.convert("L").filter(ImageFilter.FIND_EDGES).convert("RGB")
+            
             try:
                 result = p(
                     prompt=positive_final,
@@ -1023,7 +1008,7 @@ def apply_inpaint(
                     negative_prompt_2=negative_2,
                     image=image_pil,
                     mask_image=mask_pil,
-                    control_image=image_pil,
+                    control_image=c_img,
                     controlnet_conditioning_scale=float(cn_scale),
                     num_inference_steps=steps,
                     strength=strength,
@@ -1574,7 +1559,7 @@ This is a **local SDXL inpainting demo** (portfolio-friendly).
 
                                 with gr.Row():
                                     use_controlnet = gr.Checkbox(label=t("en", "use_cn"), value=False)
-                                    controlnet_type = gr.Dropdown(["depth", "openpose", "inpaint"], value="depth", label=t("en", "cn_type"))
+                                    controlnet_type = gr.Dropdown(["canny", "depth", "openpose"], value="canny", label=t("en", "cn_type"))
                                 cn_scale = gr.Slider(0.1, 1.0, value=0.45, step=0.05, label="ControlNet Strength (0.3~0.5 for clothes)")
 
                                 do_refine = gr.Checkbox(label="🔍 Refine (Slower: avoid with low VRAM)", value=False, interactive=True)
