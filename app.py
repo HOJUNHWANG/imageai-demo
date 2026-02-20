@@ -1340,27 +1340,54 @@ def generate_image(prompt, width, height, steps, seed):
 def send_to_editor(img, current_working_long):
     if img is None:
         return None, None, "No image to send.", "Error: Generate an image first."
-    return on_upload(img, current_working_long)
+    # Ensure SDXL inpaint pipeline is ready before editing
+    if CURRENT_MODE != "edit":
+        switch_mode("edit")
+    # Convert any Gradio Image format to PIL Image
+    try:
+        if isinstance(img, Image.Image):
+            pil_img = img
+        elif isinstance(img, np.ndarray):
+            pil_img = Image.fromarray(img)
+        elif isinstance(img, dict):
+            # Gradio 4.x may return {"path": "/tmp/xxx.png", ...}
+            path = img.get("path") or img.get("url") or img.get("name", "")
+            pil_img = Image.open(path)
+        elif isinstance(img, str) or hasattr(img, '__fspath__'):
+            pil_img = Image.open(str(img))
+        else:
+            pil_img = Image.open(str(img))
+        return on_upload(pil_img, current_working_long)
+    except Exception as e:
+        print(f"[SEND_TO_EDITOR] Error: {type(e).__name__}: {e}, img type={type(img)}")
+        return None, None, f"Error: {e}", f"Error sending image: {type(img).__name__}"
 
 # (Public repo) Admin unlock helpers removed.
 
 def build_ui():
     TEXT = {
         "en": {
-            "title": "## ImageAI Demo (SDXL Inpaint)",
-            "help_title": "Help / Quick Guide",
+            "title": "## 🖼️ ImageAI Studio",
+            "help_title": "📖 How to Use",
             "help": (
-                "1) **Upload** an image\n"
-                "2) Make a **Mask**\n"
-                "   - Auto Mask: click **Auto Mask (v5)** (requires MediaPipe model)\n"
-                "   - Manual Mask: click on the image (requires SAM weights)\n"
-                "3) Write **Positive / Negative** prompts\n"
-                "4) (Optional) enable **ControlNet** or **Refine** (uses more VRAM)\n"
-                "5) Click **Apply**\n\n"
-                "If the 2nd run fails with memory errors:\n"
-                "- Lower **Working Long Side** / **Steps**\n"
-                "- Click **Unload Aux** (recommended) or **Hard Clear**\n"
-                "- In `.env`: `LOW_VRAM=1`, `AUTO_UNLOAD_AUX=1`\n"
+                "### 🎨 Generate\n"
+                "1. Go to the **Generate** tab\n"
+                "2. Enter a prompt describing the image you want\n"
+                "3. Click **Generate**\n"
+                "4. Click **Send to Editor →** to edit the generated image\n\n"
+                "### ✏️ Edit\n"
+                "1. Go to the **Edit** tab (or send an image from Generate)\n"
+                "2. Upload an image or use one from Generate\n"
+                "3. Create a mask:\n"
+                "   - **Auto Mask**: select target area and click Auto Mask\n"
+                "   - **Manual Mask**: click on the image\n"
+                "4. Enter your edit prompt (e.g., `pink pants`, `black jacket`)\n"
+                "5. Click **Apply Edit**\n\n"
+                "### 💡 Tips\n"
+                "- **Auto-enrich** (ON by default) automatically adds quality keywords and negative prompts\n"
+                "- **ControlNet** preserves the body structure during edits – lower the strength (0.3~0.5) for color changes\n"
+                "- If edits are too subtle, increase **Strength** (e.g., 0.55 → 0.75)\n"
+                "- If you hit memory issues, click **Hard Clear** or lower the resolution\n"
             ),
             "lang": "Language",
             "status": "Status / Logs",
@@ -1372,43 +1399,50 @@ def build_ui():
             "auto_mask": "Auto Mask",
             "prompt": "Prompt",
             "settings": "Settings",
-            "auto_enrich": "Auto-enrich prompt",
-            "pos": "Positive Prompt",
+            "auto_enrich": "✨ Auto-enrich prompt (recommended)",
+            "pos": "Prompt",
             "neg": "Negative Prompt",
-            "prompt_check": "Prompt Check",
+            "prompt_check": "🔍 Preview Final Prompt",
             "prompt_check_label": "Prompt Check (final prompts + token counts)",
             "final_prompt": "Final prompt (applied)",
-            "apply": "Apply",
-            "clear_mask": "Clear Mask",
-            "auto_mask_btn": "Auto Mask (v5)",
-            "working_long": "Working Long Side (px)",
-            "sam": "SAM Model (Manual Mask)",
+            "apply": "▶️ Apply Edit",
+            "clear_mask": "🗑️ Clear Mask",
+            "auto_mask_btn": "🎯 Auto Mask",
+            "working_long": "Resolution (long side px)",
+            "sam": "SAM Model",
             "mask_expand": "Mask Expand (px)",
             "mask_blur": "Mask Blur (px)",
             "steps": "Inference Steps",
-            "strength": "Strength",
-            "guidance": "Guidance Scale (CFG)",
+            "strength": "Edit Strength",
+            "guidance": "Guidance (CFG)",
             "seed": "Seed (-1 = random)",
             "used_seed": "Used Seed",
-            "use_cn": "ControlNet",
+            "use_cn": "🔗 ControlNet",
             "cn_type": "Type",
             "refine": "Refine Pass",
         },
         "kr": {
-            "title": "## ImageAI 데모 (SDXL 인페인트)",
-            "help_title": "도움말 / 빠른 가이드",
+            "title": "## 🖼️ ImageAI Studio",
+            "help_title": "📖 사용법",
             "help": (
-                "1) 이미지 **업로드**\n"
-                "2) **마스크** 만들기\n"
-                "   - Auto Mask(v5): MediaPipe 모델 필요\n"
-                "   - Manual Mask: 이미지 클릭(SAM weights 필요)\n"
-                "3) **Positive/Negative** 프롬프트 입력\n"
-                "4) (선택) **ControlNet / Refine** (VRAM 추가 사용)\n"
-                "5) **Apply** 클릭\n\n"
-                "두 번째 실행에서 메모리 에러가 나면:\n"
-                "- Working Long Side / Steps 낮추기\n"
-                "- **Unload Aux** 또는 **Hard Clear**\n"
-                "- `.env`: `LOW_VRAM=1`, `AUTO_UNLOAD_AUX=1`\n"
+                "### 🎨 이미지 생성\n"
+                "1. **Generate** 탭으로 이동\n"
+                "2. 원하는 이미지를 설명하는 프롬프트 입력\n"
+                "3. **Generate** 클릭\n"
+                "4. **Send to Editor →** 클릭하여 생성된 이미지 편집\n\n"
+                "### ✏️ 이미지 편집\n"
+                "1. **Edit** 탭으로 이동 (또는 Generate에서 이미지 전송)\n"
+                "2. 이미지 업로드 또는 생성된 이미지 사용\n"
+                "3. 마스크 생성:\n"
+                "   - **Auto Mask**: 영역 선택 후 Auto Mask 클릭\n"
+                "   - **Manual Mask**: 이미지 위에 직접 클릭\n"
+                "4. 편집 프롬프트 입력 (예: `핑크색 바지`, `검정 재킷`)\n"
+                "5. **Apply Edit** 클릭\n\n"
+                "### 💡 팁\n"
+                "- **Auto-enrich** (기본 ON)가 자동으로 품질 키워드 + negative 프롬프트 생성\n"
+                "- **ControlNet**은 편집 시 신체 구조 유지 – 색상 변경 시 강도를 0.3~0.5로 낮추세요\n"
+                "- 편집이 너무 미미하면 **Strength**를 높이세요 (예: 0.55 → 0.75)\n"
+                "- 메모리 문제가 생기면 **Hard Clear** 클릭 또는 해상도를 낮추세요\n"
             ),
             "lang": "언어",
             "status": "상태 / 로그",
@@ -1420,25 +1454,25 @@ def build_ui():
             "auto_mask": "자동 마스크",
             "prompt": "프롬프트",
             "settings": "설정",
-            "auto_enrich": "프롬프트 자동 확장",
-            "pos": "Positive Prompt",
+            "auto_enrich": "✨ 프롬프트 자동 보강 (권장)",
+            "pos": "프롬프트",
             "neg": "Negative Prompt",
-            "prompt_check": "프롬프트 체크",
-            "prompt_check_label": "프롬프트 체크(최종 prompt/prompt_2 + 토큰 수)",
+            "prompt_check": "🔍 최종 프롬프트 미리보기",
+            "prompt_check_label": "프롬프트 체크(최종 prompt + 토큰 수)",
             "final_prompt": "최종 prompt(적용됨)",
-            "apply": "적용(Apply)",
-            "clear_mask": "마스크 지우기",
-            "auto_mask_btn": "Auto Mask (v5)",
+            "apply": "▶️ 편집 적용",
+            "clear_mask": "🗑️ 마스크 지우기",
+            "auto_mask_btn": "🎯 Auto Mask",
             "working_long": "작업 해상도(긴 변 px)",
-            "sam": "SAM 모델(수동 마스크)",
+            "sam": "SAM 모델",
             "mask_expand": "마스크 확장(px)",
             "mask_blur": "마스크 블러(px)",
             "steps": "스텝(steps)",
-            "strength": "강도(strength)",
+            "strength": "편집 강도",
             "guidance": "CFG(guidance)",
             "seed": "시드(-1 랜덤)",
             "used_seed": "사용된 시드",
-            "use_cn": "ControlNet",
+            "use_cn": "🔗 ControlNet",
             "cn_type": "타입",
             "refine": "리파인(Refine)",
         },
@@ -1451,151 +1485,158 @@ def build_ui():
     def render_help(lang: str):
         return t(lang, "help")
 
-    with gr.Blocks(title="ImageAI Demo") as demo:
-        lang = gr.Dropdown(["en", "kr"], value="en", label="Language")
+    with gr.Blocks(title="ImageAI Studio") as demo:
+        # Header
         title_md = gr.Markdown(t("en", "title"))
 
-        with gr.Accordion(t("en", "help_title"), open=False):
-            help_md = gr.Markdown(render_help("en"))
-
-        # Top bar: Status + VRAM + buttons
         with gr.Row():
-            with gr.Column(scale=7):
-                global_status = gr.Markdown(value="**Ready.**")
-            with gr.Column(scale=5):
-                vram_box = gr.Textbox(label=t("en", "vram"), value=get_vram_text(), lines=7, interactive=False)
-                with gr.Row():
-                    btn_vram_refresh = gr.Button("VRAM Refresh")
-                    btn_soft_clear = gr.Button("🧹 Soft Clear")
-                    btn_unload_aux = gr.Button("Unload Aux")
-                    btn_hard_clear = gr.Button("🔥 Hard Clear")
+            lang = gr.Dropdown(["en", "kr"], value="en", label="🌐", scale=1, min_width=80)
+            with gr.Accordion(t("en", "help_title"), open=False):
+                help_md = gr.Markdown(render_help("en"))
 
-        # Main layout: Tabs for modes
+        # ─── VRAM / System (collapsible) ───
+        with gr.Accordion("⚙️ System / VRAM", open=False):
+            with gr.Row():
+                vram_box = gr.Textbox(label=t("en", "vram"), value=get_vram_text(), lines=5, interactive=False, scale=3)
+                with gr.Column(scale=1):
+                    btn_vram_refresh = gr.Button("🔄 Refresh", size="sm")
+                    btn_soft_clear = gr.Button("🧹 Soft Clear", size="sm")
+                    btn_unload_aux = gr.Button("📦 Unload Aux", size="sm")
+                    btn_hard_clear = gr.Button("🔥 Hard Clear", size="sm")
+
+        # ═══════════════════════════════════
+        # MAIN TABS
+        # ═══════════════════════════════════
         with gr.Tabs():
-            with gr.TabItem("Image Editing"):
-                with gr.Row():
-                    with gr.Column(scale=7):
-                        with gr.Group():
-                            gr.Markdown(f"### {t('en','result')}")
-                            output = gr.Image(height=520)
-                            run_status = gr.Textbox(lines=2, label=t("en", "run_status"))
-
-                        with gr.Group():
-                            gr.Markdown(f"### {t('en','working')}")
-                            input_image = gr.Image(type="pil", height=420)
-
-                    with gr.Column(scale=5):
-                        with gr.Tabs():
-                            with gr.TabItem("Welcome"):
-                                gr.Markdown("""
-### Welcome
-
-This is a **local SDXL inpainting demo** (portfolio-friendly).
-
-**Quick start**
-- Upload an image
-- Create a mask (Manual or Auto)
-- Write a prompt (e.g., `make the shirt pink`)
-- Click **Prompt Check** (verify final prompts)
-- Click **Apply**
-
-**If edits are subtle**
-- Increase **Strength** a bit (e.g., 0.60 → 0.75)
-- Ensure the mask fully covers the garment
-- Try enabling **ControlNet** to preserve structure and reduce drift
-- Try **Refine** for consistency
-
-**If you hit memory issues on 2nd run**
-- Click **Unload Aux** or **Hard Clear**
-- Lower Working Long Side / Steps
-- Use `LOW_VRAM=1`, `AUTO_UNLOAD_AUX=1`
-""")
-
-                            with gr.TabItem("Mask"):
-                                gr.Markdown(f"### {t('en','auto_mask')}")
-                                auto_target = gr.Dropdown(["top", "pants", "hair", "background", "person", "auto"], value="top", label="Auto mask target")
-                                auto_gallery = gr.Gallery(columns=4, height=320)
-                                auto_status = gr.Textbox(lines=2)
-                                with gr.Row():
-                                    btn_auto = gr.Button(t("en", "auto_mask_btn"))
-                                    btn_clear = gr.Button(t("en", "clear_mask"))
-
-                                active_mask_md = gr.Markdown(_mask_source_text())
-                                with gr.Row():
-                                    btn_use_manual = gr.Button("Use Manual")
-                                    btn_use_auto = gr.Button("Use Auto")
-
-                                with gr.Group():
-                                    gr.Markdown(f"### {t('en','mask')}")
-                                    mask_overlay = gr.Image(type="numpy", height=220)
-                                    selected_mask_preview = gr.Image(type="numpy", height=300)
-
-
-                            with gr.TabItem("Prompt"):
-                                auto_enrich = gr.Checkbox(value=True, label=t("en", "auto_enrich"))
-                                edit_mode = gr.Dropdown(choices=get_edit_mode_choices(), value="Wear / Change Clothes")
-                                prompt = gr.Textbox(lines=3, label=t("en", "pos"))
-                                negative = gr.Textbox(lines=3, label=t("en", "neg"))
-                                preview_btn = gr.Button(t("en", "prompt_check"), variant="secondary")
-                                preview_output = gr.Markdown(value="")
-                                positive_final_preview = gr.Textbox(lines=3, interactive=False, label=t("en", "final_prompt"))
-
-                            with gr.TabItem("Settings"):
-                                # Performance + VRAM settings are always visible in public
-                                if PUBLIC_DEMO:
-                                    working_long_side = gr.Slider(512, PUBLIC_MAX_LONG_SIDE, value=min(896, PUBLIC_MAX_LONG_SIDE), step=64, label=t("en", "working_long"))
-                                    steps = gr.Slider(10, PUBLIC_MAX_STEPS, value=min(18, PUBLIC_MAX_STEPS), label=t("en", "steps"))
-                                else:
-                                    working_long_side = gr.Slider(512, 1536, value=1024, step=64, label=t("en", "working_long"))
-                                    steps = gr.Slider(10, 60, value=28, label=t("en", "steps"))
-
-                                sam_model = gr.Dropdown(["vit_b", "vit_h"], value="vit_b", label=t("en", "sam"))
-                                mask_expand = gr.Slider(0, 40, value=10, label=t("en", "mask_expand"))
-                                mask_blur = gr.Slider(0, 40, value=18, label=t("en", "mask_blur"))
-                                strength = gr.Slider(0.3, 0.95, value=0.55, label=t("en", "strength"))
-                                guidance = gr.Slider(1.0, 12.0, value=7.0, label=t("en", "guidance"))
-                                seed = gr.Number(value=-1, label=t("en", "seed"))
-                                seed_display = gr.Textbox(label=t("en", "used_seed"), interactive=False)
-
-                                with gr.Row():
-                                    use_controlnet = gr.Checkbox(label=t("en", "use_cn"), value=False)
-                                    controlnet_type = gr.Dropdown(["canny", "depth", "openpose"], value="canny", label=t("en", "cn_type"))
-                                cn_scale = gr.Slider(0.1, 1.0, value=0.45, step=0.05, label="ControlNet Strength (0.3~0.5 for clothes)")
-
-                                do_refine = gr.Checkbox(label="🔍 Refine (Slower: avoid with low VRAM)", value=False, interactive=True)
-                                btn_apply = gr.Button(t("en", "apply"), variant="primary")
-
-            with gr.TabItem("🎨 Text to Image (FLUX)") as t2i_tab:
+            # ─── TAB 1: GENERATE ───
+            with gr.TabItem("🎨 Generate") as t2i_tab:
                 with gr.Row():
                     with gr.Column(scale=5):
-                        t2i_prompt = gr.Textbox(lines=4, label="Prompt", placeholder="Describe the image you want to generate...")
+                        t2i_prompt = gr.Textbox(
+                            lines=4, label="Prompt",
+                            placeholder="Describe the image you want to generate...\ne.g., A woman in a red dress walking through a sunlit garden"
+                        )
                         with gr.Row():
                             t2i_width = gr.Slider(256, 1536, value=1024, step=16, label="Width")
                             t2i_height = gr.Slider(256, 1536, value=1024, step=16, label="Height")
                         with gr.Row():
-                            t2i_steps = gr.Slider(1, 12, value=4, step=1, label="Steps (Schnell: 4 recommended)")
-                            t2i_seed = gr.Number(value=-1, label="Seed")
-                        
-                        t2i_btn = gr.Button("Generate Image", variant="primary")
-                        t2i_msg = gr.Textbox(label="ℹ️ Status", interactive=False)
-                        t2i_send = gr.Button("Send to Image Editor ➡️")
+                            t2i_steps = gr.Slider(1, 12, value=4, step=1, label="Steps (4 recommended)")
+                            t2i_seed = gr.Number(value=-1, label="Seed (-1 = random)")
+
+                        t2i_btn = gr.Button("🚀 Generate", variant="primary", size="lg")
+                        t2i_msg = gr.Textbox(label="Status", interactive=False)
+                        t2i_send = gr.Button("📤 Send to Editor →", variant="secondary")
 
                     with gr.Column(scale=7):
                         t2i_output = gr.Image(label="Generated Image", height=600)
 
-        # Events
+            # ─── TAB 2: EDIT ───
+            with gr.TabItem("✏️ Edit") as edit_tab:
+                with gr.Row():
+                    # Left: Result + Working image
+                    with gr.Column(scale=7):
+                        with gr.Group():
+                            gr.Markdown("### 📸 Result")
+                            output = gr.Image(height=480)
+                            run_status = gr.Textbox(lines=2, label="Status", interactive=False)
+
+                        with gr.Group():
+                            gr.Markdown("### 🖼️ Working Image")
+                            input_image = gr.Image(type="pil", height=380)
+
+                    # Right: Controls
+                    with gr.Column(scale=5):
+                        # ── Prompt Section ──
+                        with gr.Group():
+                            gr.Markdown("### 💬 Prompt")
+                            prompt = gr.Textbox(
+                                lines=3, label=t("en", "pos"),
+                                placeholder="Describe what you want to change...\ne.g., pink pants, black leather jacket, blonde hair"
+                            )
+                            auto_enrich = gr.Checkbox(value=True, label=t("en", "auto_enrich"))
+                            edit_mode = gr.Dropdown(choices=get_edit_mode_choices(), value="Wear / Change Clothes", label="Edit Mode")
+                            # Hidden negative (auto-generated when auto_enrich is on)
+                            negative = gr.Textbox(visible=False, value="")
+
+                        # ── Mask Section ──
+                        with gr.Accordion("🎭 Mask", open=True):
+                            with gr.Row():
+                                auto_target = gr.Dropdown(
+                                    ["top", "pants", "hair", "background", "person", "auto"],
+                                    value="top", label="Target", scale=2
+                                )
+                                btn_auto = gr.Button(t("en", "auto_mask_btn"), scale=2)
+                                btn_clear = gr.Button(t("en", "clear_mask"), scale=1)
+
+                            auto_gallery = gr.Gallery(columns=4, height=200)
+                            auto_status = gr.Textbox(lines=1, show_label=False)
+
+                            active_mask_md = gr.Markdown(_mask_source_text())
+                            with gr.Row():
+                                btn_use_manual = gr.Button("Manual Mask", size="sm")
+                                btn_use_auto = gr.Button("Auto Mask", size="sm")
+                            with gr.Row():
+                                mask_overlay = gr.Image(type="numpy", height=180, label="Overlay")
+                                selected_mask_preview = gr.Image(type="numpy", height=180, label="Selected Mask")
+
+                        # ── Settings Section ──
+                        with gr.Accordion("⚙️ Settings", open=False):
+                            if PUBLIC_DEMO:
+                                working_long_side = gr.Slider(512, PUBLIC_MAX_LONG_SIDE, value=min(896, PUBLIC_MAX_LONG_SIDE), step=64, label=t("en", "working_long"))
+                                steps = gr.Slider(10, PUBLIC_MAX_STEPS, value=min(18, PUBLIC_MAX_STEPS), label=t("en", "steps"))
+                            else:
+                                working_long_side = gr.Slider(512, 1536, value=1024, step=64, label=t("en", "working_long"))
+                                steps = gr.Slider(10, 60, value=28, label=t("en", "steps"))
+
+                            strength = gr.Slider(0.3, 0.95, value=0.55, label=t("en", "strength"))
+                            guidance = gr.Slider(1.0, 12.0, value=7.0, label=t("en", "guidance"))
+
+                            with gr.Row():
+                                seed = gr.Number(value=-1, label=t("en", "seed"))
+                                seed_display = gr.Textbox(label=t("en", "used_seed"), interactive=False)
+
+                            sam_model = gr.Dropdown(["vit_b", "vit_h"], value="vit_b", label=t("en", "sam"))
+                            mask_expand = gr.Slider(0, 40, value=10, label=t("en", "mask_expand"))
+                            mask_blur = gr.Slider(0, 40, value=18, label=t("en", "mask_blur"))
+
+                            with gr.Row():
+                                use_controlnet = gr.Checkbox(label=t("en", "use_cn"), value=False)
+                                controlnet_type = gr.Dropdown(["canny", "depth", "openpose"], value="canny", label=t("en", "cn_type"))
+                            cn_scale = gr.Slider(0.1, 1.0, value=0.45, step=0.05, label="ControlNet Strength (0.3~0.5 for clothes)")
+                            do_refine = gr.Checkbox(label="🔍 Refine (slower, more VRAM)", value=False)
+
+                        # ── Apply Button ──
+                        btn_apply = gr.Button(t("en", "apply"), variant="primary", size="lg")
+
+                        # ── Prompt Preview ──
+                        with gr.Accordion("🔍 Prompt Preview", open=False):
+                            preview_btn = gr.Button(t("en", "prompt_check"), variant="secondary")
+                            preview_output = gr.Markdown(value="")
+                            positive_final_preview = gr.Textbox(lines=3, interactive=False, label=t("en", "final_prompt"))
+
+                # Status bar
+                global_status = gr.Markdown(value="**Ready.**")
+
+        # ═══════════════════════════════════
+        # EVENTS
+        # ═══════════════════════════════════
+
+        # Image upload & manual mask
         input_image.upload(fn=on_upload, inputs=[input_image, working_long_side], outputs=[input_image, selected_mask_preview, auto_status, global_status])
         input_image.select(fn=on_manual_click, inputs=[sam_model], outputs=[mask_overlay, selected_mask_preview, auto_status, global_status])
         input_image.select(fn=lambda: _mask_source_text(), inputs=None, outputs=[active_mask_md])
 
+        # Auto mask
         btn_auto.click(fn=build_auto_candidates_v5, inputs=[prompt, auto_enrich, edit_mode, auto_target], outputs=[auto_gallery, auto_status])
         btn_auto.click(fn=use_auto_mask, inputs=None, outputs=[active_mask_md, mask_overlay, selected_mask_preview])
         btn_clear.click(fn=clear_mask, outputs=[mask_overlay, selected_mask_preview, auto_gallery, auto_status])
         btn_clear.click(fn=lambda: _mask_source_text(), inputs=None, outputs=[active_mask_md])
 
+        # Prompt preview
         preview_btn.click(fn=preview_enriched_prompt, inputs=[prompt, negative, auto_enrich, edit_mode], outputs=[preview_output])
         preview_btn.click(fn=lambda p,n,a,m: (build_final_prompts(p,n,a,m)["prompt"],), inputs=[prompt, negative, auto_enrich, edit_mode], outputs=[positive_final_preview])
 
+        # Apply edit
         btn_apply.click(
             fn=apply_inpaint,
             inputs=[
@@ -1607,48 +1648,46 @@ This is a **local SDXL inpainting demo** (portfolio-friendly).
             outputs=[output, run_status, positive_final_preview, global_status, seed_display, vram_box],
         )
 
+        # Mask source buttons
         btn_use_manual.click(fn=use_manual_mask, inputs=None, outputs=[active_mask_md, mask_overlay, selected_mask_preview])
         btn_use_auto.click(fn=use_auto_mask, inputs=None, outputs=[active_mask_md, mask_overlay, selected_mask_preview])
-        
-        # T2I Events
+
+        # Generate events
         t2i_btn.click(
             fn=generate_image,
             inputs=[t2i_prompt, t2i_width, t2i_height, t2i_steps, t2i_seed],
             outputs=[t2i_output, t2i_msg, vram_box]
         )
-        
+
         t2i_send.click(
             fn=send_to_editor,
             inputs=[t2i_output, working_long_side],
             outputs=[input_image, selected_mask_preview, auto_status, global_status]
         )
-        # Auto-switch to FLUX mode when tab is selected
+
+        # Auto-switch to FLUX mode when Generate tab is selected
         def _on_flux_tab_select():
             if CURRENT_MODE != "generate":
-                yield "Switching to FLUX... (Model will download if not present)"
+                yield "⏳ Loading FLUX model..."
                 msg = switch_mode("generate")
                 yield msg
             else:
-                yield "Ready (FLUX active)"
+                yield "✅ Ready (FLUX active)"
 
         t2i_tab.select(fn=_on_flux_tab_select, inputs=None, outputs=[t2i_msg])
 
-
+        # VRAM buttons
         def _notify(msg: str):
             try:
                 gr.Info(msg)
             except Exception:
                 pass
-        # VRAM buttons
+
         def _vram_refresh_ui():
             _notify("VRAM refreshed.")
             return get_vram_text()
 
-        btn_vram_refresh.click(
-            fn=_vram_refresh_ui,
-            inputs=None,
-            outputs=[vram_box],
-        )
+        btn_vram_refresh.click(fn=_vram_refresh_ui, inputs=None, outputs=[vram_box])
 
         def _soft_clear_ui():
             msg, txt = soft_clear_vram()
@@ -1663,14 +1702,14 @@ This is a **local SDXL inpainting demo** (portfolio-friendly).
         def _unload_aux_ui():
             unload_aux_pipelines()
             txt = get_vram_text()
-            _notify('Unloaded aux pipelines (ControlNet/Refine).')
+            _notify('Unloaded aux pipelines.')
             return txt
 
         btn_soft_clear.click(fn=_soft_clear_ui, inputs=None, outputs=[vram_box])
         btn_unload_aux.click(fn=_unload_aux_ui, inputs=None, outputs=[vram_box])
         btn_hard_clear.click(fn=_hard_clear_ui, inputs=None, outputs=[vram_box])
 
-        # Language switching (best-effort: update help/title; some labels are static)
+        # Language switching
         def _on_lang_change(l):
             return (
                 t(l, "title"),
@@ -1709,6 +1748,15 @@ def _queue_compat(app: gr.Blocks, max_size: int, concurrency: int):
         # Last resort: call without kwargs
         return app.queue()
 
+
+# ─── Custom CSS for professional look ───
+CSS = """
+.gradio-container { max-width: 1400px !important; margin: auto; }
+.gr-group { border-radius: 12px !important; }
+.gr-button-primary { font-size: 1.1em !important; padding: 10px 20px !important; }
+.gr-button-lg { min-height: 48px !important; }
+footer { display: none !important; }
+"""
 
 if __name__ == "__main__":
     demo = build_ui()
