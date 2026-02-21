@@ -24,6 +24,12 @@ Thumbs.db
 
 # --- Secrets / local config ---
 .env
+.env.local
+.env.*
+
+# --- Temp & Caches ---
+.cache/
+.huggingface/
 
 # --- Model weights / artifacts ---
 weights/
@@ -31,17 +37,23 @@ weights/
 *.safetensors
 *.ckpt
 *.onnx
-
 models/
 
-# --- Outputs (generated) ---
+# --- Outputs ---
 outputs/
+last_seed.txt
 
 # --- Logs ---
 *.log
 
+# --- Node ---
+frontend/node_modules/
+frontend/.next/
+frontend/out/
 
-#--- Seeds ---
-last_seed.txt
-# --- Portfolio ---
+# --- Debug files ---
+debug_*.py
+Prompt.txt
+
+# --- Portfolio (private) ---
 PORTFOLIO_GUIDE.md

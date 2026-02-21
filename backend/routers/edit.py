@@ -1,0 +1,402 @@
+"""
+Edit router: SDXL inpainting with real-time progress tracking.
+Supports optional ControlNet (canny/depth/openpose).
+Inference runs in a background thread so /api/progress stays responsive.
+"""
+import io
+import base64
+import time
+import asyncio
+import gc
+import torch
+import numpy as np
+from fastapi import APIRouter, UploadFile, File, Form
+from PIL import Image, ImageFilter
+from typing import Optional
+
+from ..core.pipeline import (
+    get_inpaint_pipe, switch_mode, CURRENT_MODE,
+    controlnet_pipes, unload_aux_pipelines, hard_clear_vram,
+    STATE, cv2, _apply_optimizations, _aggressive_vram_cleanup,
+)
+from ..core.config import (
+    DEVICE, MOCK_INPAINT, AUTO_UNLOAD_AUX, AUTO_HARD_CLEAR_THRESHOLD,
+    CONTROLNET_DEPTH, CONTROLNET_OPENPOSE, CONTROLNET_CANNY,
+    JUGGERNAUT_INPAINT, LOW_VRAM,
+)
+from ..core.vram import get_vram_info
+from .system import set_progress, reset_progress, make_step_callback, clear_cancel, check_cancel
+
+import sys, os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
+from prompt_enricher import enrich_positive, enrich_negative, get_preset_list
+
+router = APIRouter()
+
+
+def _pil_to_base64(img, quality: int = 90) -> str:
+    if isinstance(img, np.ndarray):
+        img = Image.fromarray(img)
+    buffer = io.BytesIO()
+    img.save(buffer, format="JPEG", quality=quality, optimize=True)
+    return base64.b64encode(buffer.getvalue()).decode()
+
+
+def _bytes_to_pil(data: bytes) -> Image.Image:
+    return Image.open(io.BytesIO(data)).convert("RGB")
+
+
+def _resize_to_long_side(pil: Image.Image, long_side: int) -> Image.Image:
+    w, h = pil.size
+    scale = long_side / max(w, h)
+    nw = int(w * scale) // 8 * 8
+    nh = int(h * scale) // 8 * 8
+    return pil.resize((nw, nh), Image.LANCZOS)
+
+
+def _postprocess_mask(mask_u8: np.ndarray, expand_px: int, blur_px: int) -> np.ndarray:
+    mask_pil = Image.fromarray(mask_u8).convert("L")
+    if expand_px > 0:
+        for _ in range(expand_px):
+            mask_pil = mask_pil.filter(ImageFilter.MaxFilter(3))
+    if blur_px > 0:
+        mask_pil = mask_pil.filter(ImageFilter.GaussianBlur(radius=blur_px))
+    return np.array(mask_pil)
+
+
+def _preprocess_controlnet_image(image_pil: Image.Image, cn_type: str) -> Image.Image:
+    """Preprocess image for ControlNet based on type."""
+    if cn_type == "canny":
+        if cv2 is not None:
+            arr = np.array(image_pil)
+            arr = cv2.Canny(arr, 100, 200)
+            arr = arr[:, :, None]
+            arr = np.concatenate([arr, arr, arr], axis=2)
+            return Image.fromarray(arr)
+        else:
+            # Fallback without cv2: use PIL edge detection
+            return image_pil.convert("L").filter(ImageFilter.FIND_EDGES).convert("RGB")
+    # depth and openpose: pass the original image directly
+    # the ControlNet model handles the preprocessing internally
+    return image_pil
+
+
+def _load_controlnet_pipe(cn_type: str):
+    """Load or return cached ControlNet inpaint pipeline."""
+    from diffusers import ControlNetModel, StableDiffusionXLControlNetInpaintPipeline
+
+    if cn_type in controlnet_pipes:
+        return controlnet_pipes[cn_type]
+
+    # Select model repo/path
+    if cn_type == "canny":
+        repo = CONTROLNET_CANNY
+    elif cn_type == "depth":
+        repo = CONTROLNET_DEPTH
+    elif cn_type == "openpose":
+        repo = CONTROLNET_OPENPOSE
+    else:
+        repo = CONTROLNET_CANNY
+
+    dtype = torch.float16 if DEVICE == "cuda" else torch.float32
+
+    print(f"[CONTROLNET] Loading {cn_type} from {repo}...")
+    controlnet = ControlNetModel.from_pretrained(
+        repo, torch_dtype=dtype, use_safetensors=True, local_files_only=False
+    )
+
+    # Reverted from_pipe because it causes extreme deadlocks with accelerate's CPU offload hooks
+    # when _apply_optimizations is called again on the shared modules.
+    from ..core.config import JUGGERNAUT_INPAINT, DEFAULT_MODEL
+    
+    if os.path.exists(JUGGERNAUT_INPAINT):
+        cn_pipe = StableDiffusionXLControlNetInpaintPipeline.from_single_file(
+            JUGGERNAUT_INPAINT, controlnet=controlnet,
+            torch_dtype=dtype, use_safetensors=True,
+        )
+    else:
+        cn_pipe = StableDiffusionXLControlNetInpaintPipeline.from_pretrained(
+            DEFAULT_MODEL, controlnet=controlnet,
+            torch_dtype=dtype, safety_checker=None,
+        )
+
+    cn_pipe = _apply_optimizations(cn_pipe, f"ControlNet-{cn_type}")
+    controlnet_pipes[cn_type] = cn_pipe
+    print(f"[CONTROLNET] {cn_type} ready on {DEVICE}")
+    return cn_pipe
+
+
+def _encode_prompt_with_breaks(pipe, prompt: str, negative_prompt: str):
+    """
+    Encodes long prompts by splitting them at the 'BREAK' keyword.
+    Each chunk is encoded up to 77 tokens, and the resulting embeddings
+    are concatenated along the sequence dimension to bypass the limit.
+    """
+    prompt = prompt or ""
+    negative_prompt = negative_prompt or ""
+    
+    # 1. Split by BREAK
+    pos_chunks = [c.strip() for c in prompt.split("BREAK") if c.strip()]
+    neg_chunks = [c.strip() for c in negative_prompt.split("BREAK") if c.strip()]
+    
+    if not pos_chunks:
+        pos_chunks = [""]
+    if not neg_chunks:
+        neg_chunks = [""]
+        
+    # SDXL uses two text encoders. We need to collect embeddings for all chunks.
+    all_pos_embeds, all_pos_pooled = [], []
+    all_neg_embeds, all_neg_pooled = [], []
+    
+    # Process positive chunks
+    for chunk in pos_chunks:
+        # SDXL encode_prompt returns: (prompt_embeds, negative_prompt_embeds, pooled_prompt_embeds, negative_pooled_prompt_embeds)
+        # We pass empty strings for negative here to just extract the positive parts purely.
+        embeds, _, pooled, _ = pipe.encode_prompt(
+            prompt=chunk,
+            negative_prompt="",
+            device=pipe._execution_device
+        )
+        all_pos_embeds.append(embeds)
+        all_pos_pooled.append(pooled)
+        
+    # Process negative chunks
+    for chunk in neg_chunks:
+        embeds, _, pooled, _ = pipe.encode_prompt(
+            prompt="",
+            negative_prompt=chunk,
+            device=pipe._execution_device
+        )
+        # the function returns negative_embeddings in the second position when prompt is empty
+        _, neg_embeds, _, neg_pooled = pipe.encode_prompt(
+            prompt="", # This forces it to evaluate the negative prompt properly
+            negative_prompt=chunk,
+            device=pipe._execution_device
+        )
+        all_neg_embeds.append(neg_embeds)
+        all_neg_pooled.append(neg_pooled)
+        
+    # Concatenate sequence embeddings (dim=1 is the sequence length)
+    final_pos_embeds = torch.cat(all_pos_embeds, dim=1)
+    
+    # If negative chunks are fewer than positive, repeat the last negative chunk to match sequence length
+    if len(all_neg_embeds) < len(all_pos_embeds):
+        padding_needed = len(all_pos_embeds) - len(all_neg_embeds)
+        last_neg = all_neg_embeds[-1] if all_neg_embeds else all_pos_embeds[0] * 0 # Use zeros if totally empty
+        all_neg_embeds.extend([last_neg] * padding_needed)
+    elif len(all_pos_embeds) < len(all_neg_embeds):
+        padding_needed = len(all_neg_embeds) - len(all_pos_embeds)
+        last_pos = all_pos_embeds[-1]
+        all_pos_embeds.extend([last_pos] * padding_needed)
+        final_pos_embeds = torch.cat(all_pos_embeds, dim=1)
+        
+    final_neg_embeds = torch.cat(all_neg_embeds[:len(all_pos_embeds)], dim=1)
+    
+    # Pooled embeddings are global context (not sequence length dependent). 
+    # Usually we just take the first one or average them. Taking the first (main subject) is standard for SDXL.
+    final_pos_pooled = all_pos_pooled[0]
+    final_neg_pooled = all_neg_pooled[0] if all_neg_pooled else all_pos_pooled[0] * 0
+
+    return final_pos_embeds, final_neg_embeds, final_pos_pooled, final_neg_pooled
+
+
+def _run_edit(pil_image, pil_mask, prompt, negative, steps, strength, guidance, seed,
+              auto_enrich, mask_expand, mask_blur,
+              use_controlnet=False, controlnet_type="canny", cn_scale=0.45,
+              enricher_preset="general", protect_face=False):
+    """Blocking inference — runs in a thread so async event loop stays free."""
+    from ..core.pipeline import get_inpaint_pipe, switch_mode, CURRENT_MODE as cm
+    clear_cancel()
+
+    # Phase 1: Model loading
+    set_progress("edit", "loading_model", "Loading SDXL inpaint pipeline...")
+    if cm != "edit":
+        switch_mode("edit")
+
+    check_cancel("edit")  # Cancel check after model load
+
+    # Phase 2: Preprocessing
+    set_progress("edit", "preprocessing", "Processing image & mask...")
+
+    mask_u8 = np.array(pil_mask.convert("L"))
+    mask_u8 = _postprocess_mask(mask_u8, mask_expand, mask_blur)
+
+    if protect_face:
+        # Subtract face and hair from the mask so they are never edited
+        from segformer_masks import segformer_face_mask, segformer_hair_mask
+        face_mask = segformer_face_mask(pil_image)
+        hair_mask = segformer_hair_mask(pil_image)
+        # Expand the face/hair mask slightly for safety
+        import cv2
+        kernel = np.ones((7,7), np.uint8)
+        combined_protect = cv2.dilate(np.maximum(face_mask, hair_mask), kernel, iterations=2)
+        # Subtract from target mask
+        mask_u8[combined_protect > 127] = 0
+
+    mask_pil_final = Image.fromarray(mask_u8).convert("L")
+
+    if auto_enrich:
+        enriched_pos, info = enrich_positive(prompt, preset=enricher_preset)
+        enriched_neg = enrich_negative(negative, preset=enricher_preset)
+    else:
+        enriched_pos = prompt
+        enriched_neg = negative or ""
+
+    s = seed
+    if s < 0:
+        s = int(torch.randint(0, 2**32 - 1, (1,)).item())
+    gen = torch.Generator(device="cpu").manual_seed(s)
+
+    check_cancel("edit")  # Cancel check before inference
+
+    result_image = None
+
+    # ControlNet branch
+    if use_controlnet:
+        set_progress("edit", "loading_model", f"Loading ControlNet ({controlnet_type})...")
+        try:
+            cn_pipe = _load_controlnet_pipe(controlnet_type)
+            control_image = _preprocess_controlnet_image(pil_image, controlnet_type)
+
+            set_progress("edit", "running", f"ControlNet {controlnet_type} (0/{steps})", 0, steps)
+            
+            # Encode prompt with BREAK logic
+            pos_emb, neg_emb, pos_pool, neg_pool = _encode_prompt_with_breaks(cn_pipe, enriched_pos, enriched_neg)
+            
+            callback = make_step_callback("edit", steps)
+
+            start = time.time()
+            with torch.inference_mode():
+                result_image = cn_pipe(
+                    prompt_embeds=pos_emb,
+                    negative_prompt_embeds=neg_emb,
+                    pooled_prompt_embeds=pos_pool,
+                    negative_pooled_prompt_embeds=neg_pool,
+                    image=pil_image,
+                    mask_image=mask_pil_final,
+                    control_image=control_image,
+                    controlnet_conditioning_scale=float(cn_scale),
+                    num_inference_steps=steps,
+                    strength=strength,
+                    guidance_scale=guidance,
+                    generator=gen,
+                    callback_on_step_end=callback,
+                ).images[0]
+            print("[CONTROLNET] Generation success!")
+        except RuntimeError as e:
+            if "CANCELLED_BY_USER" in str(e):
+                raise  # Re-raise cancel
+            print(f"[CONTROLNET] Failed: {e} → falling back to base inpaint")
+            result_image = None
+        except Exception as e:
+            print(f"[CONTROLNET] Failed: {e} → falling back to base inpaint")
+            result_image = None
+
+    # Base inpaint (fallback or no ControlNet)
+    if result_image is None:
+        p = get_inpaint_pipe()
+        if p is None:
+            set_progress("edit", "error", "Failed to load pipeline")
+            return {"error": "Failed to load inpaint pipeline.", "status": "error"}
+
+        set_progress("edit", "running", f"Starting inpaint (0/{steps})", 0, steps)
+        
+        # Encode prompt with BREAK logic
+        pos_emb, neg_emb, pos_pool, neg_pool = _encode_prompt_with_breaks(p, enriched_pos, enriched_neg)
+            
+        callback = make_step_callback("edit", steps)
+
+        start = time.time()
+        with torch.inference_mode():
+            result_image = p(
+                prompt_embeds=pos_emb,
+                negative_prompt_embeds=neg_emb,
+                pooled_prompt_embeds=pos_pool,
+                negative_pooled_prompt_embeds=neg_pool,
+                image=pil_image,
+                mask_image=mask_pil_final,
+                num_inference_steps=steps,
+                strength=strength,
+                guidance_scale=guidance,
+                generator=gen,
+                callback_on_step_end=callback,
+            ).images[0]
+
+    # Phase 4: Encoding
+    set_progress("edit", "encoding", "Encoding result...")
+    elapsed = round(time.time() - start, 2)
+
+    if AUTO_UNLOAD_AUX:
+        unload_aux_pipelines()
+
+    set_progress("edit", "done", f"Done in {elapsed}s")
+
+    return {
+        "image": _pil_to_base64(result_image),
+        "seed": s,
+        "elapsed": elapsed,
+        "prompt_used": enriched_pos,
+        "status": "success",
+        "vram": get_vram_info(),
+    }
+
+
+@router.post("/edit")
+async def edit_image(
+    image: UploadFile = File(...),
+    mask: UploadFile = File(...),
+    prompt: str = Form(""),
+    negative: str = Form(""),
+    steps: int = Form(28),
+    strength: float = Form(0.55),
+    guidance: float = Form(7.0),
+    mask_expand: int = Form(10),
+    mask_blur: int = Form(18),
+    seed: int = Form(-1),
+    auto_enrich: bool = Form(True),
+    use_controlnet: bool = Form(False),
+    controlnet_type: str = Form("canny"),
+    cn_scale: float = Form(0.45),
+    enricher_preset: str = Form("general"),
+    protect_face: bool = Form(False),
+    working_long_side: int = Form(832),
+):
+    """Apply SDXL inpainting — runs inference in a thread so progress polling works."""
+    try:
+        # Read files in the async context (non-blocking)
+        img_bytes = await image.read()
+        mask_bytes = await mask.read()
+        pil_image = _bytes_to_pil(img_bytes)
+        pil_mask = Image.open(io.BytesIO(mask_bytes)).convert("L")
+        del img_bytes, mask_bytes
+
+        # Resize
+        pil_image = _resize_to_long_side(pil_image, working_long_side)
+        pil_mask = pil_mask.resize(pil_image.size, Image.LANCZOS)
+
+        task = asyncio.create_task(asyncio.to_thread(
+            _run_edit, pil_image, pil_mask, prompt, negative, steps, strength,
+            guidance, seed, auto_enrich, mask_expand, mask_blur,
+            use_controlnet, controlnet_type, cn_scale, enricher_preset, protect_face
+        ))
+        from . import system
+        
+        while not task.done():
+            if system.CANCEL_FLAG:
+                return {"error": "Cancelled by user.", "status": "cancelled"}
+            await asyncio.sleep(0.25)
+            
+        result = task.result()
+        return result
+    except RuntimeError as e:
+        if "CANCELLED_BY_USER" in str(e):
+            return {"error": "Cancelled by user.", "status": "cancelled"}
+        set_progress("edit", "error", str(e))
+        return {"error": str(e), "status": "error"}
+    except torch.cuda.OutOfMemoryError:
+        hard_clear_vram()
+        set_progress("edit", "error", "Out of Memory")
+        return {"error": "Out of Memory. VRAM cleared.", "status": "oom"}
+    except Exception as e:
+        set_progress("edit", "error", str(e))
+        return {"error": str(e), "status": "error"}

@@ -1,80 +1,95 @@
-# ImageAI: High-Performance Local Generative AI System
+# ImageAI Studio
 
-![Python](https://img.shields.io/badge/Python-3.11-blue?logo=python&logoColor=white)
-![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-EE4C2C?logo=pytorch&logoColor=white)
-![Diffusers](https://img.shields.io/badge/HuggingFace-Diffusers-FFD21E?logo=huggingface&logoColor=black)
-![Gradio](https://img.shields.io/badge/Gradio-UI-orange?logo=gradio&logoColor=white)
+AI-powered image generation and editing studio built with **Next.js** frontend and **FastAPI** backend, powered by **FLUX** (text-to-image) and **SDXL** (inpainting).
 
-> **A robust local AI application engineering two distinct diffusion models (FLUX.1-schnell & SDXL) into a unified, memory-efficient workflow.**
->
-> *Developed to mitigate the "VRAM bottleneck" on consumer hardware while delivering state-of-the-art generation and editing capabilities.*
+![License](https://img.shields.io/badge/License-MIT-blue.svg)
 
----
+## Features
 
-## 🏗️ Engineering Highlights
+- **🎨 Image Generation** — Text-to-image using FLUX Schnell
+- **✏️ Image Editing** — AI inpainting with SDXL + ControlNet (Canny, Depth, Pose)
+- **🎭 Auto Masking** — MediaPipe (person), SAM (click-to-select), and SegFormer (clothing items & hair)
+- **🛡️ Face Protection** — Automatically preserve facial identity during clothing edits
+- **✨ Prompt Enrichment** — Auto-expand simple prompts using specialized Generation and Edit presets
+- **📊 VRAM Management** — Soft/hard clear, lazy model loading, and CPU offloading
 
-This project demonstrates **System Engineering** and **AI Pipeline Architecture** capabilities by solving key challenges in local AI deployment.
+## Architecture
 
-### 1. Hybrid Model Orchestration (AI Engineer Focus)
-Instead of relying on a single monolithic model, this system orchestrates two specialized models to maximize quality and performance:
-- **Generation Layer (FLUX.1-schnell)**: Utilized for its superior prompt adherence and 4-step distilled inference speed.
-- **Editing Layer (Stable Diffusion XL Inpaint)**: Integrated for its precise masking capabilities and high-resolution denoising strength.
-- **Result:** A seamless workflow where users generate high-fidelity bases in FLUX and perform pixel-perfect edits in SDXL without context switching.
-
-### 2. Resource-Constrained Optimization (Backend Dev Focus)
-Running 30GB+ of model weights on a single 12GB Consumer GPU required aggressive resource management strategies:
-- **Dynamic Pipeline Offloading**: Implemented a custom context manager that monitors user intent (Tab Switching) to automatically move idle models to CPU/RAM, preventing Out-Of-Memory (OOM) crashes.
-- **Precision Engineering**: Enforced `torch.bfloat16` inference (where supported) to reduce memory footprint by 50% while maintaining numerical stability.
-- **Garbage Collection Strategy**: Developed `soft_clear()` (cache only) and `hard_clear()` (full unload) protocols to recover fragmented VRAM during long sessions.
-
-### 3. Robust Dependency Resolution
-- **"DLL Hell" Mitigation**: Solved critical version conflicts between `huggingface_hub`, `transformers`, and `diffusers` through automated environment patching hotfixes.
-- **Environment Isolation**: Strictly scoped `requirements.txt` to tested versions to ensure reproducibility.
-
----
-
-## 🚀 Key Features
-
-- **Text-to-Image**: Instant 4-step generation using FLUX.1 models.
-- **Smart Inpainting**:
-    - **Manual**: Precision masking with **Segment Anything Model (SAM)** integration.
-    - **Auto**: Semantic segmentation using **MediaPipe** (automatically detects Face, Clothes, Background).
-- **Non-Blocking UI**: Asynchronous loading states for smooth user experience during massive model swaps.
-
----
-
-## 📦 Installation
-
-### Prerequisites
-- **Python 3.11** (Strict requirement for dependency compatibility)
-- **NVIDIA GPU** (RTX 3060 12GB or higher recommended)
-
-### Setup Schema
-```bash
-# 1. Clone & Environment
-git clone https://github.com/HOJUNHWANG/imageai-demo.git
-python -m venv venv311
-.\venv311\Scripts\activate
-
-# 2. Install Dependencies
-pip install -r requirements.txt
-pip install git+https://github.com/facebookresearch/segment-anything.git
-
-# 3. Authenticate (Required for FLUX)
-huggingface-cli login
+```
+imageAI_public/
+├── backend/              # FastAPI server
+│   ├── main.py           # App entry, CORS, lifespan
+│   ├── core/
+│   │   ├── config.py     # Device, paths, flags
+│   │   ├── pipeline.py   # Model loading & switching
+│   │   └── vram.py       # GPU memory management
+│   └── routers/
+│       ├── generate.py   # POST /api/generate
+│       ├── edit.py       # POST /api/edit
+│       ├── mask.py       # POST /api/mask/auto
+│       └── system.py     # GET /api/vram, POST /api/clear
+├── frontend/             # Next.js app
+│   └── src/app/
+│       ├── page.tsx      # Generate + Edit pages
+│       ├── globals.css   # Dark theme design system
+│       └── lib/api.ts    # Typed API client
+├── prompt_enricher.py    # Prompt expansion
+├── sam_utils.py          # SAM segmentation
+├── mp_tasks_utils.py     # MediaPipe masking
+└── start.bat             # One-click launcher
 ```
 
----
+## Requirements
 
-## 🖥️ Usage Guide
+- **GPU**: NVIDIA GPU with 12GB+ VRAM (RTX 3080 Ti recommended)
+- **Python**: 3.11+
+- **Node.js**: 20+ (for frontend)
+- **CUDA**: 12.x
 
-1. **Launch System**: `python app.py`
-2. **Dashboard**: Navigate to `http://localhost:7860`
-3. **Operations**:
-   - **Gen Tab**: Prompt -> Generate (FLUX loads automatically).
-   - **Edit Tab**: Upload/Send Image -> Select Mask -> Apply (SDXL loads automatically).
+## Quick Start
 
----
+### Option 1: One-click
+```bat
+start.bat
+```
 
-## 📝 License
-MIT License.
+### Option 2: Manual
+```bash
+# Terminal 1: Backend
+pip install -r requirements.txt
+pip install fastapi uvicorn python-multipart
+uvicorn backend.main:app --host 127.0.0.1 --port 8000
+
+# Terminal 2: Frontend
+cd frontend
+npm install
+npm run dev
+```
+
+Open **http://localhost:3000**
+
+## API Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/api/generate` | FLUX text-to-image |
+| `POST` | `/api/edit` | SDXL inpainting |
+| `POST` | `/api/mask/auto` | Auto-mask generation |
+| `POST` | `/api/upload` | Upload working image |
+| `GET` | `/api/vram` | VRAM status |
+| `POST` | `/api/clear/soft` | Cache clear |
+| `POST` | `/api/clear/hard` | Full model unload |
+
+## Tech Stack
+
+| Layer | Technology |
+|-------|-----------|
+| Frontend | Next.js 16, TypeScript, Tailwind CSS |
+| Backend | FastAPI, Uvicorn |
+| AI Models | FLUX Schnell, SDXL Inpaint, SDXL ControlNet |
+| Segmentation | SAM, MediaPipe, SegFormer (b2_clothes) |
+| GPU | PyTorch, Diffusers, CUDA, xformers |
+
+## License
+
+MIT — see [LICENSE](LICENSE)

@@ -1,13 +1,18 @@
-gradio>=4.0.0
-
+# Core
 torch>=2.0.0
 torchvision
 
-# Core Model Pipeline
+# AI Pipeline
 diffusers>=0.36.0
 transformers>=4.46.0
 accelerate>=0.26.0
 huggingface_hub>=1.4.1
+
+# Backend Server
+fastapi>=0.100.0
+uvicorn[standard]>=0.23.0
+python-multipart>=0.0.6
+pydantic>=2.0.0
 
 # Utilities
 timm
@@ -17,7 +22,8 @@ psutil
 mediapipe>=0.10.9
 opencv-python-headless>=4.8.0
 
-# Optional Dependencies
+# Optional (recommended)
 protobuf>=3.20.0
 sentencepiece>=0.1.99
-bitsandbytes>=0.40.0  # Recommended for memory efficiency
+bitsandbytes>=0.40.0
+xformers
