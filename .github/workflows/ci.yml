@@ -22,14 +22,25 @@ jobs:
 
       - name: Syntax check
         run: |
-          python -m py_compile app.py mp_tasks_utils.py sam_utils.py prompt_enricher.py
+          python -m py_compile backend/main.py mp_tasks_utils.py sam_utils.py prompt_enricher.py segformer_masks.py
 
       - name: Doctor (expected to fail if weights missing)
         run: |
           python scripts/doctor.py || true
 
-      - name: UI smoke (MOCK_INPAINT)
+      - name: Backend smoke (MOCK_INPAINT)
         env:
           MOCK_INPAINT: "1"
         run: |
-          python -c "import app; print('import ok')"
+          python -c "import backend.main; print('backend ok')"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Frontend build check
+        run: |
+          cd frontend
+          npm install
+          npm run build
