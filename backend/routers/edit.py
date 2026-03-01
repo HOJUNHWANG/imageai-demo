@@ -4,7 +4,6 @@ Supports optional ControlNet (canny/depth/openpose).
 Inference runs in a background thread so /api/progress stays responsive.
 """
 import io
-import base64
 import time
 import asyncio
 import gc
@@ -12,10 +11,10 @@ import torch
 import numpy as np
 from fastapi import APIRouter, UploadFile, File, Form
 from PIL import Image, ImageFilter
-from typing import Optional
+from typing import Literal, Optional
 
 from ..core.pipeline import (
-    get_inpaint_pipe, switch_mode, CURRENT_MODE,
+    get_inpaint_pipe, switch_mode,
     controlnet_pipes, unload_aux_pipelines, hard_clear_vram,
     STATE, cv2, _apply_optimizations, _aggressive_vram_cleanup,
 )
@@ -25,21 +24,15 @@ from ..core.config import (
     JUGGERNAUT_INPAINT, LOW_VRAM,
 )
 from ..core.vram import get_vram_info
+from ..core.utils import pil_to_base64
 from .system import set_progress, reset_progress, make_step_callback, clear_cancel, check_cancel
+from . import system as _system_module
 
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 from prompt_enricher import enrich_positive, enrich_negative, get_preset_list
 
 router = APIRouter()
-
-
-def _pil_to_base64(img, quality: int = 90) -> str:
-    if isinstance(img, np.ndarray):
-        img = Image.fromarray(img)
-    buffer = io.BytesIO()
-    img.save(buffer, format="JPEG", quality=quality, optimize=True)
-    return base64.b64encode(buffer.getvalue()).decode()
 
 
 def _bytes_to_pil(data: bytes) -> Image.Image:
@@ -49,12 +42,24 @@ def _bytes_to_pil(data: bytes) -> Image.Image:
 def _resize_to_long_side(pil: Image.Image, long_side: int) -> Image.Image:
     w, h = pil.size
     scale = long_side / max(w, h)
-    nw = int(w * scale) // 8 * 8
-    nh = int(h * scale) // 8 * 8
+    # 64px alignment: SDXL's UNet blocks work in 64px strides, misalignment wastes computation
+    nw = max(64, (int(w * scale) // 64) * 64)
+    nh = max(64, (int(h * scale) // 64) * 64)
     return pil.resize((nw, nh), Image.LANCZOS)
 
 
 def _postprocess_mask(mask_u8: np.ndarray, expand_px: int, blur_px: int) -> np.ndarray:
+    if cv2 is not None:
+        if expand_px > 0:
+            # Ellipse kernel gives smoother edges than square; single dilate vs PIL loop
+            k = max(3, expand_px * 2 + 1)
+            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
+            mask_u8 = cv2.dilate(mask_u8, kernel, iterations=1)
+        if blur_px > 0:
+            bk = blur_px if blur_px % 2 == 1 else blur_px + 1
+            mask_u8 = cv2.GaussianBlur(mask_u8, (bk, bk), 0)
+        return mask_u8
+    # PIL fallback (no cv2)
     mask_pil = Image.fromarray(mask_u8).convert("L")
     if expand_px > 0:
         for _ in range(expand_px):
@@ -82,11 +87,27 @@ def _preprocess_controlnet_image(image_pil: Image.Image, cn_type: str) -> Image.
 
 
 def _load_controlnet_pipe(cn_type: str):
-    """Load or return cached ControlNet inpaint pipeline."""
+    """Load or return cached ControlNet inpaint pipeline.
+    Unloads base pipe + other ControlNet types before loading to stay within 12GB VRAM.
+    """
     from diffusers import ControlNetModel, StableDiffusionXLControlNetInpaintPipeline
 
     if cn_type in controlnet_pipes:
         return controlnet_pipes[cn_type]
+
+    # Unload other cached ControlNet types
+    for other_type in list(controlnet_pipes.keys()):
+        if other_type != cn_type:
+            controlnet_pipes.pop(other_type, None)
+
+    # Unload base SDXL pipe — ControlNet pipeline re-embeds the full SDXL UNet.
+    # Both cannot fit in 12GB simultaneously.
+    from ..core import pipeline as _pl_mod
+    if _pl_mod.pipe is not None:
+        print("[CONTROLNET] Unloading base SDXL pipe to free VRAM...")
+        _pl_mod.pipe = None
+        _pl_mod.PIPE = None
+    _aggressive_vram_cleanup()
 
     # Select model repo/path
     if cn_type == "canny":
@@ -120,7 +141,9 @@ def _load_controlnet_pipe(cn_type: str):
             torch_dtype=dtype, safety_checker=None,
         )
 
-    cn_pipe = _apply_optimizations(cn_pipe, f"ControlNet-{cn_type}")
+    # Force CPU offload for ControlNet: SDXL+ControlNet together exceed 12GB if fully on GPU.
+    # CPU offload moves layers to GPU on-demand → ~5-6GB peak instead of ~13-14GB.
+    cn_pipe = _apply_optimizations(cn_pipe, f"ControlNet-{cn_type}", force_cpu_offload=True)
     controlnet_pipes[cn_type] = cn_pipe
     print(f"[CONTROLNET] {cn_type} ready on {DEVICE}")
     return cn_pipe
@@ -162,14 +185,8 @@ def _encode_prompt_with_breaks(pipe, prompt: str, negative_prompt: str):
         
     # Process negative chunks
     for chunk in neg_chunks:
-        embeds, _, pooled, _ = pipe.encode_prompt(
-            prompt="",
-            negative_prompt=chunk,
-            device=pipe._execution_device
-        )
-        # the function returns negative_embeddings in the second position when prompt is empty
         _, neg_embeds, _, neg_pooled = pipe.encode_prompt(
-            prompt="", # This forces it to evaluate the negative prompt properly
+            prompt="",
             negative_prompt=chunk,
             device=pipe._execution_device
         )
@@ -182,20 +199,19 @@ def _encode_prompt_with_breaks(pipe, prompt: str, negative_prompt: str):
     # If negative chunks are fewer than positive, repeat the last negative chunk to match sequence length
     if len(all_neg_embeds) < len(all_pos_embeds):
         padding_needed = len(all_pos_embeds) - len(all_neg_embeds)
-        last_neg = all_neg_embeds[-1] if all_neg_embeds else all_pos_embeds[0] * 0 # Use zeros if totally empty
+        last_neg = all_neg_embeds[-1] if all_neg_embeds else torch.zeros_like(all_pos_embeds[0])
         all_neg_embeds.extend([last_neg] * padding_needed)
     elif len(all_pos_embeds) < len(all_neg_embeds):
         padding_needed = len(all_neg_embeds) - len(all_pos_embeds)
         last_pos = all_pos_embeds[-1]
         all_pos_embeds.extend([last_pos] * padding_needed)
         final_pos_embeds = torch.cat(all_pos_embeds, dim=1)
-        
+
     final_neg_embeds = torch.cat(all_neg_embeds[:len(all_pos_embeds)], dim=1)
-    
-    # Pooled embeddings are global context (not sequence length dependent). 
-    # Usually we just take the first one or average them. Taking the first (main subject) is standard for SDXL.
+
+    # Pooled embeddings: take the first chunk (main subject intent). Standard for SDXL.
     final_pos_pooled = all_pos_pooled[0]
-    final_neg_pooled = all_neg_pooled[0] if all_neg_pooled else all_pos_pooled[0] * 0
+    final_neg_pooled = all_neg_pooled[0] if all_neg_pooled else torch.zeros_like(all_pos_pooled[0])
 
     return final_pos_embeds, final_neg_embeds, final_pos_pooled, final_neg_pooled
 
@@ -222,16 +238,13 @@ def _run_edit(pil_image, pil_mask, prompt, negative, steps, strength, guidance, 
     mask_u8 = _postprocess_mask(mask_u8, mask_expand, mask_blur)
 
     if protect_face:
-        # Subtract face and hair from the mask so they are never edited
-        from segformer_masks import segformer_face_mask, segformer_hair_mask
-        face_mask = segformer_face_mask(pil_image)
-        hair_mask = segformer_hair_mask(pil_image)
-        # Expand the face/hair mask slightly for safety
-        import cv2
-        kernel = np.ones((7,7), np.uint8)
-        combined_protect = cv2.dilate(np.maximum(face_mask, hair_mask), kernel, iterations=2)
-        # Subtract from target mask
-        mask_u8[combined_protect > 127] = 0
+        # Single SegFormer call extracts face + hair together (was 2 separate load/infer/unload cycles)
+        from segformer_masks import segformer_face_hair_mask
+        face_hair_mask = segformer_face_hair_mask(pil_image)
+        if cv2 is not None:
+            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
+            face_hair_mask = cv2.dilate(face_hair_mask, kernel, iterations=2)
+        mask_u8[face_hair_mask > 127] = 0
 
     mask_pil_final = Image.fromarray(mask_u8).convert("L")
 
@@ -252,18 +265,21 @@ def _run_edit(pil_image, pil_mask, prompt, negative, steps, strength, guidance, 
     result_image = None
 
     # ControlNet branch
+    # Actual steps run = int(steps * strength) due to diffusers strength scheduling
+    actual_steps = max(1, int(steps * strength))
+
     if use_controlnet:
         set_progress("edit", "loading_model", f"Loading ControlNet ({controlnet_type})...")
         try:
             cn_pipe = _load_controlnet_pipe(controlnet_type)
             control_image = _preprocess_controlnet_image(pil_image, controlnet_type)
 
-            set_progress("edit", "running", f"ControlNet {controlnet_type} (0/{steps})", 0, steps)
-            
+            set_progress("edit", "running", f"ControlNet {controlnet_type} (0/{actual_steps})", 0, actual_steps)
+
             # Encode prompt with BREAK logic
             pos_emb, neg_emb, pos_pool, neg_pool = _encode_prompt_with_breaks(cn_pipe, enriched_pos, enriched_neg)
-            
-            callback = make_step_callback("edit", steps)
+
+            callback = make_step_callback("edit", actual_steps)
 
             start = time.time()
             with torch.inference_mode():
@@ -299,12 +315,12 @@ def _run_edit(pil_image, pil_mask, prompt, negative, steps, strength, guidance, 
             set_progress("edit", "error", "Failed to load pipeline")
             return {"error": "Failed to load inpaint pipeline.", "status": "error"}
 
-        set_progress("edit", "running", f"Starting inpaint (0/{steps})", 0, steps)
-        
+        set_progress("edit", "running", f"Starting inpaint (0/{actual_steps})", 0, actual_steps)
+
         # Encode prompt with BREAK logic
         pos_emb, neg_emb, pos_pool, neg_pool = _encode_prompt_with_breaks(p, enriched_pos, enriched_neg)
-            
-        callback = make_step_callback("edit", steps)
+
+        callback = make_step_callback("edit", actual_steps)
 
         start = time.time()
         with torch.inference_mode():
@@ -332,7 +348,7 @@ def _run_edit(pil_image, pil_mask, prompt, negative, steps, strength, guidance, 
     set_progress("edit", "done", f"Done in {elapsed}s")
 
     return {
-        "image": _pil_to_base64(result_image),
+        "image": pil_to_base64(result_image),
         "seed": s,
         "elapsed": elapsed,
         "prompt_used": enriched_pos,
@@ -355,34 +371,37 @@ async def edit_image(
     seed: int = Form(-1),
     auto_enrich: bool = Form(True),
     use_controlnet: bool = Form(False),
-    controlnet_type: str = Form("canny"),
+    controlnet_type: Literal["canny", "depth", "openpose"] = Form("canny"),
     cn_scale: float = Form(0.45),
     enricher_preset: str = Form("general"),
     protect_face: bool = Form(False),
-    working_long_side: int = Form(832),
+    working_long_side: int = Form(1024),
 ):
     """Apply SDXL inpainting — runs inference in a thread so progress polling works."""
+    _MAX_UPLOAD = 25 * 1024 * 1024  # 25 MB
     try:
         # Read files in the async context (non-blocking)
         img_bytes = await image.read()
+        if len(img_bytes) > _MAX_UPLOAD:
+            return {"error": "Image too large (max 25 MB).", "status": "error"}
         mask_bytes = await mask.read()
+        if len(mask_bytes) > _MAX_UPLOAD:
+            return {"error": "Mask too large (max 25 MB).", "status": "error"}
         pil_image = _bytes_to_pil(img_bytes)
         pil_mask = Image.open(io.BytesIO(mask_bytes)).convert("L")
         del img_bytes, mask_bytes
 
         # Resize
         pil_image = _resize_to_long_side(pil_image, working_long_side)
-        pil_mask = pil_mask.resize(pil_image.size, Image.LANCZOS)
+        pil_mask = pil_mask.resize(pil_image.size, Image.NEAREST)
 
         task = asyncio.create_task(asyncio.to_thread(
             _run_edit, pil_image, pil_mask, prompt, negative, steps, strength,
             guidance, seed, auto_enrich, mask_expand, mask_blur,
             use_controlnet, controlnet_type, cn_scale, enricher_preset, protect_face
         ))
-        from . import system
-        
         while not task.done():
-            if system.CANCEL_FLAG:
+            if _system_module.CANCEL_FLAG:
                 return {"error": "Cancelled by user.", "status": "cancelled"}
             await asyncio.sleep(0.25)
             
