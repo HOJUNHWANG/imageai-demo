@@ -22,7 +22,7 @@ from .config import (
     DEVICE, MOCK_INPAINT, JUGGERNAUT_INPAINT, DEFAULT_MODEL,
     CONTROLNET_DEPTH, CONTROLNET_OPENPOSE, CONTROLNET_CANNY,
     LOW_VRAM, CPU_OFFLOAD, AUTO_UNLOAD_AUX, AUTO_HARD_CLEAR_THRESHOLD,
-    PUBLIC_DEMO, PUBLIC_MAX_STEPS, WEIGHTS_DIR, BASE_DIR,
+    PUBLIC_DEMO, PUBLIC_MAX_STEPS, WEIGHTS_DIR, BASE_DIR, COMPILE_UNET,
 )
 
 try:
@@ -94,7 +94,9 @@ def _apply_optimizations(p, pipeline_name="pipeline", force_cpu_offload=False):
         p.to("cpu")
         return p
 
-    if force_cpu_offload or CPU_OFFLOAD:
+    use_cpu_offload = force_cpu_offload or CPU_OFFLOAD
+
+    if use_cpu_offload:
         # CPU offload: keeps model on CPU, moves layers to GPU on-demand
         # IMPORTANT: do NOT call p.to("cuda") before this — they're incompatible
         p.enable_model_cpu_offload()
@@ -102,12 +104,16 @@ def _apply_optimizations(p, pipeline_name="pipeline", force_cpu_offload=False):
     else:
         p.to("cuda")
 
-    # VAE optimizations (critical for 12GB cards)
-    try:
-        p.enable_vae_tiling()
-        print(f"  [{pipeline_name}] ✓ VAE tiling enabled")
-    except Exception:
-        pass
+    # VAE tiling: DO NOT enable with CPU offload — the combination forces the VAE
+    # to move CPU↔GPU once per tile (4-16 trips at 1024px), causing 10+ minute
+    # hangs after the last diffusion step. Only enable for direct-CUDA pipelines
+    # where the image is too large to decode in one pass (>1536px).
+    if not use_cpu_offload:
+        try:
+            p.enable_vae_tiling()
+            print(f"  [{pipeline_name}] ✓ VAE tiling enabled")
+        except Exception:
+            pass
 
     try:
         p.enable_vae_slicing()
@@ -122,15 +128,37 @@ def _apply_optimizations(p, pipeline_name="pipeline", force_cpu_offload=False):
     except Exception:
         pass
 
-    # xformers (fastest attention, only if not using CPU offload)
-    if not force_cpu_offload:
-        try:
-            p.enable_xformers_memory_efficient_attention()
-            print(f"  [{pipeline_name}] ✓ xformers enabled")
-        except Exception:
-            pass
+    # Flash SDP: global PyTorch backend setting — safe regardless of CPU offload mode.
+    # Enable unconditionally so attention ops use Flash Attention when on GPU.
+    try:
+        torch.backends.cuda.enable_flash_sdp(True)
+        torch.backends.cuda.enable_mem_efficient_sdp(True)
+    except Exception:
+        pass
+
+    # xformers: try for all pipelines (compatible with model_cpu_offload in practice —
+    # xformers hooks module.forward, accelerate hooks the module itself; no conflict).
+    try:
+        p.enable_xformers_memory_efficient_attention()
+        print(f"  [{pipeline_name}] ✓ xformers enabled")
+    except Exception:
+        print(f"  [{pipeline_name}] ✓ Flash SDP enabled (xformers not available)")
 
     return p
+
+
+def _unload_aux_models():
+    """Unload SAM and SegFormer from VRAM before loading diffusion models."""
+    try:
+        from ..routers.mask import _unload_sam
+        _unload_sam()
+    except Exception:
+        pass
+    try:
+        from segformer_masks import _unload_segformer
+        _unload_segformer()
+    except Exception:
+        pass
 
 
 def get_inpaint_pipe():
@@ -138,6 +166,9 @@ def get_inpaint_pipe():
     global pipe, PIPE, txt2img_pipe
     if pipe is not None:
         return pipe
+
+    # Free SAM / SegFormer VRAM before loading SDXL
+    _unload_aux_models()
 
     # Free txt2img if loaded
     if txt2img_pipe is not None:
@@ -162,6 +193,16 @@ def get_inpaint_pipe():
             )
 
         p = _apply_optimizations(p, "SDXL")
+
+        # Optional: torch.compile for 20-40% per-step speedup (COMPILE_UNET=1)
+        # First-run compilation takes 60-120s; subsequent calls are fast.
+        if COMPILE_UNET and DEVICE == "cuda" and hasattr(torch, "compile"):
+            try:
+                p.unet = torch.compile(p.unet, mode="reduce-overhead")
+                print(f"[PIPE] ✓ torch.compile applied to SDXL UNet")
+            except Exception as e:
+                print(f"[PIPE] torch.compile skipped: {e}")
+
         pipe = p
         PIPE = p
 
@@ -179,6 +220,9 @@ def get_txt2img_pipe():
     global pipe, PIPE, txt2img_pipe
     if txt2img_pipe is not None:
         return txt2img_pipe
+
+    # Free SAM / SegFormer VRAM before loading FLUX
+    _unload_aux_models()
 
     # Unload SDXL to free all VRAM
     if pipe is not None:
@@ -223,11 +267,8 @@ def get_txt2img_pipe():
             txt2img_pipe.enable_sequential_cpu_offload()
             print(f"  [FLUX] ✓ Sequential CPU offload (slowest, but fits any GPU)")
 
-        # Always apply VAE optimizations
-        try:
-            txt2img_pipe.enable_vae_tiling()
-        except Exception:
-            pass
+        # VAE tiling disabled: CPU offload + tiling causes per-tile CPU↔GPU moves
+        # which can add minutes of decode time. FLUX at ≤1024px fits in VRAM without tiling.
         try:
             txt2img_pipe.enable_vae_slicing()
         except Exception:

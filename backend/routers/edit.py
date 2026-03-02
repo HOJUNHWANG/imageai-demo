@@ -30,7 +30,7 @@ from . import system as _system_module
 
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
-from prompt_enricher import enrich_positive, enrich_negative, get_preset_list
+from prompt_enricher import enrich_positive, enrich_negative
 
 router = APIRouter()
 
@@ -100,13 +100,19 @@ def _load_controlnet_pipe(cn_type: str):
         if other_type != cn_type:
             controlnet_pipes.pop(other_type, None)
 
-    # Unload base SDXL pipe — ControlNet pipeline re-embeds the full SDXL UNet.
-    # Both cannot fit in 12GB simultaneously.
+    # Unload all other models to free VRAM before loading CN pipe.
+    # Also handles the case where FLUX (txt2img_pipe) is loaded — without this,
+    # switching from Generate→ControlNet Edit would load SDXL base first (wasted
+    # 20-40 s) only for _load_controlnet_pipe to immediately unload it.
     from ..core import pipeline as _pl_mod
+    if _pl_mod.txt2img_pipe is not None:
+        print("[CONTROLNET] Unloading FLUX to free VRAM...")
+        _pl_mod.txt2img_pipe = None
     if _pl_mod.pipe is not None:
         print("[CONTROLNET] Unloading base SDXL pipe to free VRAM...")
         _pl_mod.pipe = None
         _pl_mod.PIPE = None
+    _pl_mod.CURRENT_MODE = "edit"
     _aggressive_vram_cleanup()
 
     # Select model repo/path
@@ -157,7 +163,18 @@ def _encode_prompt_with_breaks(pipe, prompt: str, negative_prompt: str):
     """
     prompt = prompt or ""
     negative_prompt = negative_prompt or ""
-    
+
+    # Fast path: no BREAK → single encode_prompt call.
+    # With CPU offload, each call moves CLIP-L+CLIP-G (~1.8 GB) CPU↔GPU.
+    # 1 call instead of 2 halves text-encoding time (~2-5 s saved per run).
+    if "BREAK" not in prompt and "BREAK" not in negative_prompt:
+        pos_emb, neg_emb, pos_pool, neg_pool = pipe.encode_prompt(
+            prompt=prompt,
+            negative_prompt=negative_prompt,
+            device=pipe._execution_device,
+        )
+        return pos_emb, neg_emb, pos_pool, neg_pool
+
     # 1. Split by BREAK
     pos_chunks = [c.strip() for c in prompt.split("BREAK") if c.strip()]
     neg_chunks = [c.strip() for c in negative_prompt.split("BREAK") if c.strip()]
@@ -225,9 +242,17 @@ def _run_edit(pil_image, pil_mask, prompt, negative, steps, strength, guidance, 
     clear_cancel()
 
     # Phase 1: Model loading
-    set_progress("edit", "loading_model", "Loading SDXL inpaint pipeline...")
-    if cm != "edit":
-        switch_mode("edit")
+    # set_progress("loading_model") first in both branches so started_at is
+    # initialized and the elapsed timer runs from the very beginning of the request.
+    if use_controlnet:
+        # Skip loading base SDXL — _load_controlnet_pipe handles all model switching
+        # (including FLUX unload). Loading SDXL here would waste 20-40 s only to
+        # unload it immediately after.
+        set_progress("edit", "loading_model", f"Preparing ControlNet ({controlnet_type})...")
+    else:
+        set_progress("edit", "loading_model", "Loading SDXL inpaint pipeline...")
+        if cm != "edit":
+            switch_mode("edit")
 
     check_cancel("edit")  # Cancel check after model load
 
@@ -310,6 +335,14 @@ def _run_edit(pil_image, pil_mask, prompt, negative, steps, strength, guidance, 
 
     # Base inpaint (fallback or no ControlNet)
     if result_image is None:
+        # If ControlNet was attempted and failed, its pipe (~8-10 GB) is still
+        # cached. Loading base SDXL (~6 GB) on top would exceed 12 GB → OOM.
+        # Clear the CN cache and free VRAM before proceeding.
+        if use_controlnet and controlnet_pipes:
+            controlnet_pipes.clear()
+            _aggressive_vram_cleanup()
+            set_progress("edit", "loading_model", "Loading base SDXL (ControlNet fallback)...")
+
         p = get_inpaint_pipe()
         if p is None:
             set_progress("edit", "error", "Failed to load pipeline")

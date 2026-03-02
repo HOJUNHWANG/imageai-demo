@@ -8,8 +8,8 @@ try:
 except ImportError:
     cv2 = None
 
-def to_rgb_pil(pil: Image.Image) -> Image.Image:
-    """Convert PIL image to RGB mode."""
+def to_rgb_pil(pil: Image.Image | None) -> Image.Image | None:
+    """Convert PIL image to RGB mode. Returns None if input is None."""
     if pil is None:
         return None
     return pil.convert("RGB")
@@ -35,19 +35,21 @@ def postprocess_mask(mask_np: np.ndarray, expand_px: int = 0, blur_px: int = 0) 
     m = mask_np.copy().astype(np.uint8)
 
     if expand_px > 0:
-        k = int(expand_px)
         if cv2 is not None:
-            kernel = np.ones((k, k), np.uint8)
+            # Ellipse kernel gives smoother edges; size = diameter
+            k = max(3, int(expand_px) * 2 + 1)
+            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
             m = cv2.dilate(m, kernel, iterations=1)
         else:
             img = Image.fromarray(m)
-            size = k * 2 + 1
-            img = img.filter(ImageFilter.MaxFilter(size=size))
+            img = img.filter(ImageFilter.MaxFilter(size=int(expand_px) * 2 + 1))
             m = np.array(img)
 
     if blur_px > 0:
-        k = int(blur_px)
         if cv2 is not None:
+            # GaussianBlur requires odd kernel size
+            k = int(blur_px)
+            k = k if k % 2 == 1 else k + 1
             m = cv2.GaussianBlur(m, (k, k), 0)
         else:
             img = Image.fromarray(m)

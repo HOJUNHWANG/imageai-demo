@@ -13,7 +13,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from .routers import generate, edit, mask, system
-from .core.pipeline import get_inpaint_pipe
 
 
 @asynccontextmanager
@@ -30,10 +29,12 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS — allow Next.js dev server
+# CORS — configurable via CORS_ORIGINS env var (comma-separated)
+_default_origins = "http://localhost:3000,http://127.0.0.1:3000"
+_cors_origins = [o.strip() for o in os.getenv("CORS_ORIGINS", _default_origins).split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_origins=_cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -44,8 +45,3 @@ app.include_router(generate.router, prefix="/api", tags=["generate"])
 app.include_router(edit.router, prefix="/api", tags=["edit"])
 app.include_router(mask.router, prefix="/api", tags=["mask"])
 app.include_router(system.router, prefix="/api", tags=["system"])
-
-
-@app.get("/api/health")
-async def health():
-    return {"status": "ok"}

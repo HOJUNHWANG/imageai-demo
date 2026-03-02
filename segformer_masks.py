@@ -66,7 +66,7 @@ def _get_segmentation_map(pil: Image.Image) -> np.ndarray:
         logits, size=pil.size[::-1], mode="bilinear", align_corners=False
     )
     seg_map = upsampled.argmax(dim=1).squeeze().cpu().numpy()  # (H, W)
-    _unload_segformer()
+    # Keep SegFormer loaded between requests — unloaded when diffusion pipeline starts.
     return seg_map
 
 
@@ -145,4 +145,13 @@ def segformer_accessories_mask(pil: Image.Image) -> np.ndarray:
     """Accessories mask (hat, sunglasses, belt, bag, scarf)."""
     seg_map = _get_segmentation_map(pil)
     mask = _classes_to_mask(seg_map, ACCESSORIES)
+    return _morph_clean(mask, k=3)
+
+
+def segformer_face_hair_mask(pil: Image.Image) -> np.ndarray:
+    """Combined face + hair mask from a single SegFormer inference.
+    Used by protect_face to avoid running SegFormer twice for the same image.
+    """
+    seg_map = _get_segmentation_map(pil)
+    mask = _classes_to_mask(seg_map, FACE_CLASSES | HAIR_CLASSES)
     return _morph_clean(mask, k=3)

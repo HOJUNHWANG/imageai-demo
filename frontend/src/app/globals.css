@@ -376,14 +376,11 @@ select.input-field {
 }
 
 /* ─── Responsive ─── */
-@media (max-width: 1024px) {
-  :root {
-    --sidebar-width: 64px;
-  }
-}
-
 @media (max-width: 768px) {
-  :root {
-    --sidebar-width: 0px;
+  nav {
+    display: none !important;
+  }
+  main {
+    margin-left: 0 !important;
   }
 }

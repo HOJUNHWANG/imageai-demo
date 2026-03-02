@@ -4,11 +4,11 @@ echo   ImageAI Studio - Starting...
 echo ========================================
 echo.
 
-:: Kill any existing processes to avoid port conflicts
-echo [0/2] Cleaning up old processes...
-taskkill /F /IM python.exe >nul 2>&1
-taskkill /F /IM node.exe >nul 2>&1
-timeout /t 2 /nobreak > nul
+:: Kill only processes using our specific ports (8000 and 3000)
+echo [0/2] Cleaning up old processes on ports 8000 and 3000...
+for /f "tokens=5" %%a in ('netstat -aon 2^>nul ^| findstr ":8000 " ^| findstr "LISTENING"') do taskkill /F /PID %%a >nul 2>&1
+for /f "tokens=5" %%a in ('netstat -aon 2^>nul ^| findstr ":3000 " ^| findstr "LISTENING"') do taskkill /F /PID %%a >nul 2>&1
+timeout /t 1 /nobreak > nul
 
 :: Remove Next.js lock file if it exists
 del /f "%~dp0frontend\.next\dev\lock" >nul 2>&1

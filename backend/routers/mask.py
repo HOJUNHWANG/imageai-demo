@@ -3,7 +3,6 @@ Mask router: auto-masking endpoints.
 Fixed: pass (pil, helper) to build_*_mask functions.
 """
 import io
-import base64
 import numpy as np
 from fastapi import APIRouter, UploadFile, File, Form
 from PIL import Image
@@ -16,13 +15,22 @@ from ..core.config import WEIGHTS_DIR, DEVICE
 
 router = APIRouter()
 
+# ─── MPTasksHelper singleton — load once, reuse across requests ───
+_mp_helper = None
+
+def _get_mp_helper():
+    """Return a cached MPTasksHelper instance (lazy-init, never reloaded)."""
+    global _mp_helper
+    if _mp_helper is None:
+        from mp_tasks_utils import MPTasksHelper
+        _mp_helper = MPTasksHelper(weights_dir=WEIGHTS_DIR)
+    return _mp_helper
+
 
 def _pil_to_base64(img) -> str:
-    if isinstance(img, np.ndarray):
-        img = Image.fromarray(img)
-    buffer = io.BytesIO()
-    img.save(buffer, format="PNG")
-    return base64.b64encode(buffer.getvalue()).decode()
+    """Encode mask as PNG (lossless — masks need exact pixel values)."""
+    from ..core.utils import pil_to_base64
+    return pil_to_base64(img, format="PNG")
 
 
 @router.post("/mask/auto")
@@ -36,11 +44,8 @@ async def auto_mask(
         img_bytes = await image.read()
         pil = Image.open(io.BytesIO(img_bytes)).convert("RGB")
 
-        # Setup optional MediaPipe explicitly for background/person
-        mp_helper = None
-        if target in ("background", "person"):
-            from mp_tasks_utils import MPTasksHelper
-            mp_helper = MPTasksHelper(weights_dir=WEIGHTS_DIR)
+        # Use cached MPTasksHelper singleton (no reload overhead)
+        mp_helper = _get_mp_helper() if target in ("background", "person") else None
 
         # Build mask
         if target == "pants":
@@ -184,7 +189,7 @@ async def click_mask(
                 result_masks.append(_pil_to_base64(mask_np))
                 result_scores.append(round(scores[si].item(), 3))
 
-            _unload_sam()
+            # Keep SAM loaded between clicks — unloaded when diffusion pipeline starts.
             return result_masks, result_scores, labels
 
         masks_b64, scores, labels = await asyncio.to_thread(_run_sam, pil, x, y)

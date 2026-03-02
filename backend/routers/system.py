@@ -77,7 +77,12 @@ def make_step_callback(task: str, total_steps: int):
             if hasattr(pipe, "_interrupt"):
                 pipe._interrupt = True
             raise RuntimeError("CANCELLED_BY_USER")
-        set_progress(task, "running", f"Step {step + 1}/{total_steps}", step + 1, total_steps)
+        current = step + 1
+        set_progress(task, "running", f"Step {current}/{total_steps}", current, total_steps)
+        # After the last diffusion step, VAE decode begins. Notify the user so
+        # the UI doesn't appear frozen during what can be a 10-60s decode pass.
+        if current == total_steps:
+            set_progress(task, "encoding", "Decoding image (VAE)...")
         return kwargs
     return callback
 
@@ -99,7 +104,8 @@ async def get_progress():
 
 @router.get("/vram")
 async def vram_status():
-    return get_vram_info()
+    # fast=True: skip synchronize() so polling never blocks active inference
+    return get_vram_info(fast=True)
 
 
 @router.get("/health")
@@ -159,26 +165,6 @@ async def list_gen_presets():
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
     from prompt_enricher import get_gen_preset_list
     return {"presets": get_gen_preset_list()}
-
-
-FLUX_PHOTO_TOKENS = [
-    "professional photography", "shot on Canon EOS R5", "85mm f/1.4",
-    "natural studio lighting", "soft rim light", "shallow depth of field",
-    "RAW photo", "ultra high resolution", "8k uhd", "film grain",
-    "photorealistic", "hyperrealistic", "lifelike skin texture",
-    "natural skin pores", "subsurface scattering", "fine body hair",
-    "natural eye reflections", "catchlight in eyes",
-    "realistic hair strands", "volumetric hair",
-    "natural facial proportions", "anatomically correct",
-    "sharp focus on face", "bokeh background",
-]
-
-FLUX_PHOTO_NEGATIVE = (
-    "cartoon, anime, drawing, painting, illustration, 3d render, CGI, "
-    "plastic skin, over-smoothed, airbrushed, uncanny valley, "
-    "bad anatomy, deformed, extra fingers, missing fingers, "
-    "text, watermark, logo, blurry, low quality"
-)
 
 
 @router.post("/enrich/flux")

@@ -295,6 +295,7 @@ def enrich_negative(text: str | None, preset: str = "general") -> str:
         base_tokens.extend([tok.strip() for tok in extra.split(",") if tok.strip()])
     if t:
         base_tokens.extend([tok.strip() for tok in t.split(",") if tok.strip()])
+    return ", ".join(base_tokens)
 
 def enrich_flux(prompt: str, preset: str = "general") -> tuple[str, str]:
     """Enrich prompt for FLUX using selected generation preset."""

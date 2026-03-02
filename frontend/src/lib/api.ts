@@ -3,6 +3,15 @@
  */
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000/api";
 
+async function checkResponse(res: Response): Promise<Response> {
+    if (!res.ok) {
+        let msg = `HTTP ${res.status}`;
+        try { const body = await res.json(); msg = body.detail || body.error || msg; } catch { }
+        throw new Error(msg);
+    }
+    return res;
+}
+
 export interface ProgressInfo {
     active: boolean;
     task: string;
@@ -61,7 +70,7 @@ export async function generateImage(req: GenerateRequest): Promise<GenerateRespo
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(req),
     });
-    return res.json();
+    return (await checkResponse(res)).json();
 }
 
 // ─── Edit ───
@@ -70,7 +79,7 @@ export async function editImage(formData: FormData): Promise<EditResponse> {
         method: "POST",
         body: formData,
     });
-    return res.json();
+    return (await checkResponse(res)).json();
 }
 
 // ─── Mask ───
@@ -79,7 +88,7 @@ export async function autoMask(formData: FormData): Promise<MaskResponse> {
         method: "POST",
         body: formData,
     });
-    return res.json();
+    return (await checkResponse(res)).json();
 }
 
 export interface ClickMaskResponse {
@@ -96,7 +105,7 @@ export async function clickMask(formData: FormData): Promise<ClickMaskResponse> 
         method: "POST",
         body: formData,
     });
-    return res.json();
+    return (await checkResponse(res)).json();
 }
 
 // ─── Upload ───
@@ -105,38 +114,38 @@ export async function uploadImage(formData: FormData) {
         method: "POST",
         body: formData,
     });
-    return res.json();
+    return (await checkResponse(res)).json();
 }
 
 // ─── System ───
 export async function getProgress(): Promise<ProgressInfo> {
     const res = await fetch(`${API_BASE}/progress`);
-    return res.json();
+    return (await checkResponse(res)).json();
 }
 
 export async function cancelInference(): Promise<{ status: string }> {
     const res = await fetch(`${API_BASE}/cancel`, { method: "POST" });
-    return res.json();
+    return (await checkResponse(res)).json();
 }
 
 export async function getVram(): Promise<VramInfo> {
-    const res = await fetch(`${API_BASE}/vram`);
-    return res.json();
+    const res = await fetch(`${API_BASE}/vram`, { signal: AbortSignal.timeout(2000) });
+    return (await checkResponse(res)).json();
 }
 
 export async function clearSoft() {
     const res = await fetch(`${API_BASE}/clear/soft`, { method: "POST" });
-    return res.json();
+    return (await checkResponse(res)).json();
 }
 
 export async function clearHard() {
     const res = await fetch(`${API_BASE}/clear/hard`, { method: "POST" });
-    return res.json();
+    return (await checkResponse(res)).json();
 }
 
 export async function clearAux() {
     const res = await fetch(`${API_BASE}/clear/aux`, { method: "POST" });
-    return res.json();
+    return (await checkResponse(res)).json();
 }
 
 // ─── Enrich ───
@@ -146,7 +155,7 @@ export async function enrichPreview(prompt: string, negative: string, autoEnrich
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ prompt, negative, auto_enrich: autoEnrich, preset }),
     });
-    return res.json();
+    return (await checkResponse(res)).json();
 }
 
 export interface PresetInfo {
@@ -160,12 +169,12 @@ export interface PresetInfo {
 
 export async function getPresets(): Promise<{ presets: PresetInfo[] }> {
     const res = await fetch(`${API_BASE}/presets`);
-    return res.json();
+    return (await checkResponse(res)).json();
 }
 
 export async function getGenPresets(): Promise<{ presets: PresetInfo[] }> {
     const res = await fetch(`${API_BASE}/presets/gen`);
-    return res.json();
+    return (await checkResponse(res)).json();
 }
 
 export async function enrichFlux(prompt: string, autoEnrich: boolean, preset: string = "general"): Promise<{ positive: string; negative: string }> {
@@ -174,5 +183,5 @@ export async function enrichFlux(prompt: string, autoEnrich: boolean, preset: st
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ prompt, auto_enrich: autoEnrich, preset }),
     });
-    return res.json();
+    return (await checkResponse(res)).json();
 }

@@ -2,37 +2,31 @@
 Generate router: FLUX text-to-image with real-time progress tracking.
 Inference runs in a background thread so /api/progress stays responsive.
 """
-import io
-import base64
 import time
 import asyncio
 import torch
 from fastapi import APIRouter
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from PIL import Image
 
-from ..core.pipeline import get_txt2img_pipe, switch_mode, CURRENT_MODE
+from ..core.pipeline import get_txt2img_pipe, switch_mode
 from ..core.vram import get_vram_info
+from ..core.utils import pil_to_base64
 from ..core.config import DEVICE
 from .system import set_progress, reset_progress, make_step_callback, clear_cancel, check_cancel
+from . import system as _system_module
 
 router = APIRouter()
 
 
 class GenerateRequest(BaseModel):
     prompt: str
-    cn_scale: float = 0.40
-    working_long_side: int = 832
-    width: int = 1024
-    height: int = 1024
-    steps: int = 4
+    width: int = Field(1024, ge=256, le=1536)
+    height: int = Field(1024, ge=256, le=1536)
+    steps: int = Field(4, ge=1, le=12)
     seed: int = -1
 
 
-def _pil_to_base64(img: Image.Image, quality: int = 90) -> str:
-    buffer = io.BytesIO()
-    img.save(buffer, format="JPEG", quality=quality, optimize=True)
-    return base64.b64encode(buffer.getvalue()).decode()
 
 
 def _run_generate(prompt, width, height, steps, seed):
@@ -83,7 +77,7 @@ def _run_generate(prompt, width, height, steps, seed):
     set_progress("generate", "done", f"Done in {elapsed}s")
 
     return {
-        "image": _pil_to_base64(image),
+        "image": pil_to_base64(image),
         "seed": s,
         "elapsed": elapsed,
         "status": "success",
@@ -98,10 +92,8 @@ async def generate_image(req: GenerateRequest):
         task = asyncio.create_task(asyncio.to_thread(
             _run_generate, req.prompt, req.width, req.height, req.steps, req.seed
         ))
-        from . import system
-        
         while not task.done():
-            if system.CANCEL_FLAG:
+            if _system_module.CANCEL_FLAG:
                 return {"error": "Cancelled by user.", "status": "cancelled"}
             await asyncio.sleep(0.25)
             

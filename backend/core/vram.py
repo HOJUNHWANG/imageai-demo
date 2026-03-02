@@ -12,8 +12,13 @@ def _gb(x: int) -> float:
     return float(x) / (1024 ** 3)
 
 
-def get_vram_info() -> dict:
-    """Return VRAM info as a structured dict."""
+def get_vram_info(fast: bool = False) -> dict:
+    """Return VRAM info as a structured dict.
+
+    Args:
+        fast: If True, skip synchronize() to avoid blocking the GPU stream
+              during active inference. Suitable for polling endpoints.
+    """
     if DEVICE != "cuda" or not torch.cuda.is_available():
         ram = psutil.virtual_memory()
         return {
@@ -27,7 +32,8 @@ def get_vram_info() -> dict:
             "ram_total_gb": round(_gb(ram.total), 2),
         }
 
-    torch.cuda.synchronize()
+    if not fast:
+        torch.cuda.synchronize()
     dev = torch.cuda.current_device()
     total = torch.cuda.get_device_properties(dev).total_memory
 

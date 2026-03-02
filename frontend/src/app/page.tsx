@@ -24,6 +24,7 @@ export default function Home() {
   const [activeTab, setActiveTab] = useState<"welcome" | "generate" | "edit">("welcome");
   const [sentImage, setSentImage] = useState<string | null>(null);
   const [vram, setVram] = useState<VramInfo | null>(null);
+  const [backendOnline, setBackendOnline] = useState<boolean | null>(null);
 
   const handleSendToEditor = useCallback((imageBase64: string) => {
     setSentImage(imageBase64);
@@ -32,7 +33,11 @@ export default function Home() {
   const handleClearSent = useCallback(() => setSentImage(null), []);
 
   useEffect(() => {
-    const poll = () => { getVram().then(setVram).catch(() => { }); };
+    const poll = () => {
+      getVram()
+        .then(v => { setVram(v); setBackendOnline(true); })
+        .catch(() => { setBackendOnline(false); });
+    };
     poll();
     const id = setInterval(poll, 5000);
     return () => clearInterval(id);
@@ -55,12 +60,20 @@ export default function Home() {
             <div style={{ color: "var(--text-muted)" }}>{vram.allocated_gb} / {vram.total_gb} GB</div>
           </div>
         )}
-        <div style={{ fontSize: "0.7rem", color: "var(--text-muted)", padding: "0 4px", paddingBottom: 48 }}>SDXL Inpaint + FLUX · Local GPU</div>
+        <div style={{ fontSize: "0.7rem", color: "var(--text-muted)", padding: "0 4px" }}>SDXL Inpaint + FLUX · Local GPU</div>
+        {backendOnline === false && (
+          <div style={{ background: "rgba(248,113,113,0.12)", border: "1px solid rgba(248,113,113,0.3)", borderRadius: 8, padding: "6px 10px", fontSize: "0.72rem", color: "var(--error)", marginBottom: 8 }}>
+            ⚠️ Backend offline
+          </div>
+        )}
+        {backendOnline === true && (
+          <div style={{ fontSize: "0.68rem", color: "var(--success)", padding: "0 4px", paddingBottom: 48 }}>● Connected</div>
+        )}
       </nav>
       <main style={{ flex: 1, padding: 32, overflowY: "auto", marginLeft: 220 }}>
         <div style={{ display: activeTab === "welcome" ? "block" : "none" }}><WelcomePage onNavigate={setActiveTab} /></div>
-        <div style={{ display: activeTab === "generate" ? "block" : "none" }}><GeneratePage onSendToEditor={handleSendToEditor} /></div>
-        <div style={{ display: activeTab === "edit" ? "block" : "none" }}><EditPage sentImage={sentImage} onClearSent={handleClearSent} /></div>
+        <div style={{ display: activeTab === "generate" ? "block" : "none" }}><GeneratePage onSendToEditor={handleSendToEditor} backendOnline={backendOnline} /></div>
+        <div style={{ display: activeTab === "edit" ? "block" : "none" }}><EditPage sentImage={sentImage} onClearSent={handleClearSent} backendOnline={backendOnline} /></div>
       </main>
     </div>
   );
@@ -77,10 +90,24 @@ function SidebarBtn({ icon, label, active, onClick }: { icon: string; label: str
 function ProgressBar({ task, onCancel }: { task: string; onCancel: () => void }) {
   const [progress, setProgress] = useState<ProgressInfo | null>(null);
   useEffect(() => {
-    const id = setInterval(async () => {
-      try { const p = await getProgress(); if (p.task === task && (p.active || p.status === "done" || p.status === "error")) setProgress(p); } catch { }
-    }, 400);
-    return () => clearInterval(id);
+    let alive = true;
+    let interval = 400;
+    let id: ReturnType<typeof setTimeout>;
+    const poll = async () => {
+      if (!alive) return;
+      try {
+        const p = await getProgress();
+        if (!alive) return;
+        if (p.task === task && (p.active || p.status === "done" || p.status === "error")) {
+          setProgress(p);
+          // Slow down polling when not actively stepping (loading_model, done, error)
+          interval = p.status === "running" ? 300 : p.active ? 500 : 1500;
+        }
+      } catch { }
+      if (alive) id = setTimeout(poll, interval);
+    };
+    id = setTimeout(poll, interval);
+    return () => { alive = false; clearTimeout(id); };
   }, [task]);
   if (!progress || progress.status === "idle") return null;
   const pct = progress.total > 0 ? Math.round((progress.step / progress.total) * 100) : 0;
@@ -178,7 +205,7 @@ function Step({ n, title, desc }: { n: number; title: string; desc: string }) {
 // ═══════════════════════════════════════════
 // GENERATE PAGE
 // ═══════════════════════════════════════════
-function GeneratePage({ onSendToEditor }: { onSendToEditor: (img: string) => void }) {
+function GeneratePage({ onSendToEditor, backendOnline }: { onSendToEditor: (img: string) => void; backendOnline: boolean | null }) {
   const [prompt, setPrompt] = useState("");
   const [width, setWidth] = useState(1024);
   const [height, setHeight] = useState(1024);
@@ -193,11 +220,13 @@ function GeneratePage({ onSendToEditor }: { onSendToEditor: (img: string) => voi
   const [presets, setPresets] = useState<PresetInfo[]>([]);
   const [selectedPresetId, setSelectedPresetId] = useState("general");
 
+  // Retry preset fetch when backend comes online (handles page-load-before-backend case)
   useEffect(() => {
+    if (!backendOnline || presets.length > 0) return;
     getGenPresets().then((res) => {
       if (res.presets) setPresets(res.presets);
-    }).catch(console.error);
-  }, []);
+    }).catch(() => { });
+  }, [backendOnline, presets.length]);
 
   useEffect(() => {
     if (!prompt.trim()) { setEnrichedPrompt(""); return; }
@@ -250,7 +279,7 @@ function GeneratePage({ onSendToEditor }: { onSendToEditor: (img: string) => voi
             <Slider label="Width" value={width} min={256} max={1536} step={64} onChange={setWidth} />
             <Slider label="Height" value={height} min={256} max={1536} step={64} onChange={setHeight} />
             <Slider label="Steps" value={steps} min={1} max={12} step={1} onChange={setSteps} />
-            <div><label style={{ fontSize: "0.8rem", color: "var(--text-secondary)", marginBottom: 4, display: "block" }}>Seed</label><input type="number" className="input-field" value={seed} onChange={(e) => setSeed(Number(e.target.value))} style={{ padding: "8px 12px" }} /></div>
+            <div><label style={{ fontSize: "0.8rem", color: "var(--text-secondary)", marginBottom: 4, display: "block" }}>Seed</label><input type="number" className="input-field" placeholder="-1 = random" value={seed} onChange={(e) => setSeed(Number(e.target.value))} style={{ padding: "8px 12px" }} /></div>
           </div>
           {loading ? (
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
@@ -262,7 +291,7 @@ function GeneratePage({ onSendToEditor }: { onSendToEditor: (img: string) => voi
           )}
           {result && !loading && (
             <div className="fade-in">
-              {result.status === "success" ? (<><div className="status-pill success">✓ Done in {result.elapsed}s · Seed: {result.seed}</div><button className="btn-secondary" style={{ marginTop: 8, width: "100%" }} onClick={() => result.image && onSendToEditor(result.image)}>📤 Send to Editor →</button></>) : result.status === "cancelled" ? (<div className="status-pill" style={{ background: "rgba(255,165,0,0.15)", color: "orange" }}>⚠️ Cancelled</div>) : (<div className="status-pill error">✗ {result.error}</div>)}
+              {result.status === "success" ? (<><div className="status-pill success">✓ Done in {result.elapsed}s · Seed: {result.seed}</div><div style={{ display: "flex", gap: 8, marginTop: 8 }}><button className="btn-secondary" style={{ flex: 1 }} onClick={() => result.image && onSendToEditor(`data:image/jpeg;base64,${result.image}`)}>📤 Send to Editor →</button><a href={`data:image/jpeg;base64,${result.image}`} download="generated.jpg" className="btn-secondary" style={{ padding: "8px 12px" }}>⬇️</a></div></>) : result.status === "cancelled" ? (<div className="status-pill" style={{ background: "rgba(255,165,0,0.15)", color: "orange" }}>⚠️ Cancelled</div>) : (<div className="status-pill error">✗ {result.error}</div>)}
             </div>
           )}
         </div>
@@ -277,7 +306,7 @@ function GeneratePage({ onSendToEditor }: { onSendToEditor: (img: string) => voi
 // ═══════════════════════════════════════════
 // EDIT PAGE — Source+Overlay | Result layout
 // ═══════════════════════════════════════════
-function EditPage({ sentImage, onClearSent }: { sentImage: string | null; onClearSent: () => void }) {
+function EditPage({ sentImage, onClearSent, backendOnline }: { sentImage: string | null; onClearSent: () => void; backendOnline: boolean | null }) {
   const [workingImage, setWorkingImage] = useState<string | null>(null);
   const [resultImage, setResultImage] = useState<string | null>(null);
   const [maskImage, setMaskImage] = useState<string | null>(null);
@@ -313,10 +342,11 @@ function EditPage({ sentImage, onClearSent }: { sentImage: string | null; onClea
     if (sentImage && !workingImage) { setWorkingImage(sentImage); onClearSent(); }
   }, [sentImage, workingImage, onClearSent]);
 
-  // Load presets on mount
+  // Load presets — retry when backend comes online (handles page-load-before-backend case)
   useEffect(() => {
+    if (!backendOnline || presets.length > 0) return;
     getPresets().then(r => setPresets(r.presets)).catch(() => { });
-  }, []);
+  }, [backendOnline, presets.length]);
 
   useEffect(() => {
     if (!prompt.trim()) { setEnrichedPos(""); setEnrichedNeg(""); return; }
@@ -328,8 +358,11 @@ function EditPage({ sentImage, onClearSent }: { sentImage: string | null; onClea
 
   const handleUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]; if (!file) return;
+    const MAX_MB = 20;
+    if (file.size > MAX_MB * 1024 * 1024) { setStatus(`✗ File too large (max ${MAX_MB}MB)`); return; }
     const reader = new FileReader();
-    reader.onload = () => { setWorkingImage((reader.result as string).split(",")[1]); setMaskImage(null); setResultImage(null); };
+    // Store full data URL (with MIME prefix) so format is preserved correctly
+    reader.onload = () => { setWorkingImage(reader.result as string); setMaskImage(null); setResultImage(null); };
     reader.readAsDataURL(file);
   };
 
@@ -340,7 +373,7 @@ function EditPage({ sentImage, onClearSent }: { sentImage: string | null; onClea
     const y = (e.clientY - rect.top) / rect.height;
     setMaskLoading(true); setStatus("🧠 SAM analyzing click...");
     try {
-      const blob = await fetch(`data:image/png;base64,${workingImage}`).then(r => r.blob());
+      const blob = await fetch(workingImage).then(r => r.blob());
       const fd = new FormData();
       fd.append("image", blob, "image.png");
       fd.append("x", String(x));
@@ -362,7 +395,7 @@ function EditPage({ sentImage, onClearSent }: { sentImage: string | null; onClea
     if (!workingImage) return;
     setMaskLoading(true); setStatus("Generating mask...");
     try {
-      const blob = await fetch(`data:image/png;base64,${workingImage}`).then(r => r.blob());
+      const blob = await fetch(workingImage).then(r => r.blob());
       const fd = new FormData();
       fd.append("image", blob, "image.png"); fd.append("target", maskTarget); fd.append("prompt", prompt);
       const res = await autoMask(fd);
@@ -382,7 +415,7 @@ function EditPage({ sentImage, onClearSent }: { sentImage: string | null; onClea
     if (!prompt.trim()) { setStatus("Enter a prompt"); return; }
     setLoading(true); setStatus(""); setResultImage(null);
     try {
-      const imgBlob = await fetch(`data:image/png;base64,${workingImage}`).then(r => r.blob());
+      const imgBlob = await fetch(workingImage).then(r => r.blob());
       const maskBlob = await fetch(`data:image/png;base64,${maskImage}`).then(r => r.blob());
       const fd = new FormData();
       fd.append("image", imgBlob, "image.png"); fd.append("mask", maskBlob, "mask.png");
@@ -405,6 +438,15 @@ function EditPage({ sentImage, onClearSent }: { sentImage: string | null; onClea
     setLoading(false);
   };
 
+  const activePreset = presets.find(p => p.id === enricherPreset);
+
+  // Auto-clear status messages after 5 s (but not while loading)
+  useEffect(() => {
+    if (!status || loading) return;
+    const t = setTimeout(() => setStatus(""), 5000);
+    return () => clearTimeout(t);
+  }, [status, loading]);
+
   return (
     <div className="fade-in">
       <h1 style={{ fontSize: "1.5rem", fontWeight: 700, marginBottom: 4 }}>✏️ Edit</h1>
@@ -422,7 +464,7 @@ function EditPage({ sentImage, onClearSent }: { sentImage: string | null; onClea
             onClick={() => !workingImage && fileInputRef.current?.click()}>
             {workingImage ? (
               <>
-                <img src={`data:image/png;base64,${workingImage}`} alt="Source" onClick={handleImageClick}
+                <img src={workingImage} alt="Source" onClick={handleImageClick}
                   style={{ width: "100%", height: "100%", objectFit: "contain", cursor: maskMode === "click" ? "crosshair" : "default" }} />
                 {maskImage && (
                   <img src={`data:image/png;base64,${maskImage}`} alt="Mask overlay"
@@ -552,11 +594,11 @@ function EditPage({ sentImage, onClearSent }: { sentImage: string | null; onClea
                 </button>
               ))}
             </div>
-            {presets.find(p => p.id === enricherPreset) && (
+            {activePreset && (
               <div style={{ marginTop: 8, fontSize: "0.72rem", color: "var(--text-muted)", lineHeight: 1.4 }}>
-                {presets.find(p => p.id === enricherPreset)!.description}
+                {activePreset.description}
                 <span style={{ marginLeft: 8, color: "var(--accent)", fontWeight: 500 }}>
-                  S:{presets.find(p => p.id === enricherPreset)!.strength} / G:{presets.find(p => p.id === enricherPreset)!.guidance}
+                  S:{activePreset.strength} / G:{activePreset.guidance}
                 </span>
               </div>
             )}
@@ -585,7 +627,7 @@ function EditPage({ sentImage, onClearSent }: { sentImage: string | null; onClea
                 Prevents accidental changes to the face when editing clothing.
               </div>
             </div>
-            <div style={{ marginTop: 8 }}><label style={{ fontSize: "0.78rem", color: "var(--text-secondary)", marginBottom: 3, display: "block" }}>Seed</label><input type="number" className="input-field" value={seed} onChange={(e) => setSeed(Number(e.target.value))} style={{ padding: "5px 8px", fontSize: "0.82rem" }} /></div>
+            <div style={{ marginTop: 8 }}><label style={{ fontSize: "0.78rem", color: "var(--text-secondary)", marginBottom: 3, display: "block" }}>Seed</label><input type="number" className="input-field" placeholder="-1 = random" value={seed} onChange={(e) => setSeed(Number(e.target.value))} style={{ padding: "5px 8px", fontSize: "0.82rem" }} /></div>
           </div>
         </div>
 
@@ -623,10 +665,16 @@ function EditPage({ sentImage, onClearSent }: { sentImage: string | null; onClea
             {loading ? (<><span className="spinner" /> Applying...</>) : cnEnabled ? `▶️ Apply with ${cnType}` : "▶️ Apply Edit"}
           </button>
           {resultImage && (
-            <button className="btn-secondary" style={{ width: "100%", fontSize: "0.85rem" }}
-              onClick={() => { setWorkingImage(resultImage); setResultImage(null); setMaskImage(null); setStatus(""); }}>
-              🔄 Use Result as Source
-            </button>
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              <button className="btn-secondary" style={{ width: "100%", fontSize: "0.85rem" }}
+                onClick={() => { setWorkingImage(`data:image/jpeg;base64,${resultImage}`); setResultImage(null); setMaskImage(null); setStatus(""); }}>
+                🔄 Use Result as Source
+              </button>
+              <a href={`data:image/jpeg;base64,${resultImage}`} download="edited.jpg" className="btn-secondary"
+                style={{ width: "100%", fontSize: "0.85rem", textAlign: "center", textDecoration: "none", display: "block", padding: "8px 16px" }}>
+                ⬇️ Download Result
+              </a>
+            </div>
           )}
         </div>
       </div>
@@ -635,13 +683,18 @@ function EditPage({ sentImage, onClearSent }: { sentImage: string | null; onClea
 }
 
 function Slider({ label, value, min, max, step, onChange }: { label: string; value: number; min: number; max: number; step: number; onChange: (v: number) => void }) {
+  const pct = ((value - min) / (max - min)) * 100;
   return (
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 3 }}>
         <label style={{ fontSize: "0.78rem", color: "var(--text-secondary)" }}>{label}</label>
         <span style={{ fontSize: "0.78rem", color: "var(--text-muted)" }}>{value}</span>
       </div>
-      <input type="range" min={min} max={max} step={step} value={value} onChange={(e) => onChange(Number(e.target.value))} style={{ width: "100%" }} />
+      <input
+        type="range" min={min} max={max} step={step} value={value}
+        onChange={(e) => onChange(Number(e.target.value))}
+        style={{ width: "100%", background: `linear-gradient(90deg, var(--accent) ${pct}%, var(--bg-tertiary) ${pct}%)` }}
+      />
     </div>
   );
 }
