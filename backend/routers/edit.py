@@ -251,8 +251,7 @@ def _run_edit(pil_image, pil_mask, prompt, negative, steps, strength, guidance, 
         set_progress("edit", "loading_model", f"Preparing ControlNet ({controlnet_type})...")
     else:
         set_progress("edit", "loading_model", "Loading SDXL inpaint pipeline...")
-        if cm != "edit":
-            switch_mode("edit")
+        get_inpaint_pipe()  # 항상 여기서 로드 — cm 분기와 무관하게 캐시 보장
 
     check_cancel("edit")  # Cancel check after model load
 
@@ -299,11 +298,12 @@ def _run_edit(pil_image, pil_mask, prompt, negative, steps, strength, guidance, 
             cn_pipe = _load_controlnet_pipe(controlnet_type)
             control_image = _preprocess_controlnet_image(pil_image, controlnet_type)
 
-            set_progress("edit", "running", f"ControlNet {controlnet_type} (0/{actual_steps})", 0, actual_steps)
+            set_progress("edit", "preprocessing", f"Encoding prompts for ControlNet ({controlnet_type})...")
 
             # Encode prompt with BREAK logic
             pos_emb, neg_emb, pos_pool, neg_pool = _encode_prompt_with_breaks(cn_pipe, enriched_pos, enriched_neg)
 
+            set_progress("edit", "running", f"ControlNet {controlnet_type} (0/{actual_steps})", 0, actual_steps)
             callback = make_step_callback("edit", actual_steps)
 
             start = time.time()
@@ -348,10 +348,12 @@ def _run_edit(pil_image, pil_mask, prompt, negative, steps, strength, guidance, 
             set_progress("edit", "error", "Failed to load pipeline")
             return {"error": "Failed to load inpaint pipeline.", "status": "error"}
 
-        set_progress("edit", "running", f"Starting inpaint (0/{actual_steps})", 0, actual_steps)
+        set_progress("edit", "preprocessing", f"Encoding prompts ({actual_steps} steps)...")
 
         # Encode prompt with BREAK logic
         pos_emb, neg_emb, pos_pool, neg_pool = _encode_prompt_with_breaks(p, enriched_pos, enriched_neg)
+
+        set_progress("edit", "running", f"Starting inpaint (0/{actual_steps})", 0, actual_steps)
 
         callback = make_step_callback("edit", actual_steps)
 
