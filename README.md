@@ -1,43 +1,57 @@
 # ImageAI Studio
 
-AI-powered image generation and editing studio built with **Next.js** frontend and **FastAPI** backend, powered by **FLUX** (text-to-image) and **SDXL** (inpainting).
+A high-performance, AI-powered image generation and editing studio. Built with **Next.js** and **FastAPI**, this project focuses on **efficient ML model serving, dynamic VRAM management, and optimized inference pipelines** for heavy models like FLUX and SDXL.
 
 ![License](https://img.shields.io/badge/License-MIT-blue.svg)
 
-## Features
+## 🛠 Engineering Focus & Development Process
 
-- **🎨 Image Generation** — Text-to-image using FLUX Schnell
-- **✏️ Image Editing** — AI inpainting with SDXL + ControlNet (Canny, Depth, Pose)
-- **🎭 Auto Masking** — MediaPipe (person), SAM (click-to-select), and SegFormer (clothing items & hair)
-- **🛡️ Face Protection** — Automatically preserve facial identity during clothing edits
-- **✨ Prompt Enrichment** — Auto-expand simple prompts using specialized Generation and Edit presets
-- **📊 VRAM Management** — Soft/hard clear, lazy model loading, and CPU offloading
+This project was developed with a primary focus on **System Architecture and ML Inference Optimization**. 
 
-## Architecture
+- **System Architecture & ML Serving:** Designed a robust FastAPI backend to handle asynchronous model inference, dynamic model switching, and API routing.
+- **Resource & Memory Optimization:** Implemented strict VRAM management (Soft/Hard clears, lazy model loading, and CPU offloading) to prevent Out-Of-Memory (OOM) errors and ensure stable serving on consumer-grade GPUs.
+- **AI-Assisted Prototyping:** Actively utilized **Claude Code** and **Antigravity** to accelerate frontend boilerplate generation and rapid prototyping. This allowed me to concentrate my core engineering efforts on    backend architecture, memory profiling, and pipeline integration.
+  
 
-```
+## 🚀 Core Features
+
+- **⚡ Optimized Image Generation** — Text-to-image serving using FLUX Schnell with optimized latent processing.
+- **✏️ Advanced Inpainting Pipeline** — SDXL inpainting orchestrated with ControlNet (Canny, Depth, Pose) for precise semantic editing.
+- **🎭 Automated Segmentation** — Integrated MediaPipe (person), SAM (click-to-select), and SegFormer (clothing items & hair) to automate masking workflows with minimal latency.
+- **🛡️ Identity Preservation Logic** — Automated facial region protection during localized edits (e.g., clothing swapping).
+- **📊 Dynamic VRAM Management** — Custom memory handlers for lazy model loading, CPU offloading, and cache clearing to maximize hardware efficiency.
+  
+
+## 🏗 Architecture & Data Flow
+
+```text
 imageAI_public/
-├── backend/              # FastAPI server
-│   ├── main.py           # App entry, CORS, lifespan
+├── backend/              # FastAPI Inference Server
+│   ├── main.py           # App entry, CORS, lifespan management
 │   ├── core/
-│   │   ├── config.py     # Device, paths, flags
-│   │   ├── pipeline.py   # Model loading & switching
-│   │   └── vram.py       # GPU memory management
+│   │   ├── config.py     # Hardware device routing & environment config
+│   │   ├── pipeline.py   # Diffusers pipeline loading & precision tuning
+│   │   └── vram.py       # Garbage collection & GPU memory state management
 │   └── routers/
-│       ├── generate.py   # POST /api/generate
-│       ├── edit.py       # POST /api/edit
-│       ├── mask.py       # POST /api/mask/auto
-│       └── system.py     # GET /api/vram, POST /api/clear
-├── frontend/             # Next.js app
+│       ├── generate.py   # POST /api/generate (FLUX endpoint)
+│       ├── edit.py       # POST /api/edit (SDXL + ControlNet endpoint)
+│       ├── mask.py       # POST /api/mask/auto (Segmentation endpoint)
+│       └── system.py     # GET /api/vram, POST /api/clear (Ops endpoints)
+├── frontend/             # Next.js Client
 │   └── src/app/
-│       ├── page.tsx      # Generate + Edit pages
-│       ├── globals.css   # Dark theme design system
-│       └── lib/api.ts    # Typed API client
-├── prompt_enricher.py    # Prompt expansion
-├── sam_utils.py          # SAM segmentation
-├── mp_tasks_utils.py     # MediaPipe masking
-└── start.bat             # One-click launcher
+│       ├── page.tsx      # Generation & Editing Canvas
+│       └── lib/api.ts    # Typed asynchronous API client
+├── prompt_enricher.py    # LLM-based prompt expansion logic
+└── segmentation/         # Custom wrappers for SAM and MediaPipe
 ```
+
+💻 Tech Stack
+
+- **Frontend**:  Next.js 16, TypeScript, Tailwind CSS
+- **Backend & Serving**:  FastAPI, Uvicorn, Python 3.11+
+- **ML/AI Models**:  FLUX Schnell, SDXL Inpaint, SDXL ControlNet
+- **Computer Vision**:  SAM, MediaPipe, SegFormer (b2_clothes)
+- **Infra & Optimization**:  PyTorch, Diffusers, CUDA 12.x, xformers
 
 ## Requirements
 
