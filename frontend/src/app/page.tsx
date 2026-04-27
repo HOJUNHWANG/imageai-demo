@@ -9,15 +9,10 @@ import {
   clickMask,
   getProgress,
   getVram,
-  enrichPreview,
-  enrichFlux,
   cancelInference,
-  getPresets,
-  getGenPresets,
   type GenerateResponse,
   type EditResponse,
   type KontextResponse,
-  type PresetInfo,
   type ProgressInfo,
   type VramInfo,
 } from "@/lib/api";
@@ -48,7 +43,7 @@ export default function Home() {
   return (
     <div style={{ display: "flex", minHeight: "100vh" }}>
       <nav style={{ width: 220, height: "100vh", position: "fixed", top: 0, left: 0, background: "var(--bg-secondary)", borderRight: "1px solid var(--border)", padding: "24px 16px", display: "flex", flexDirection: "column", gap: 8, zIndex: 100, overflowY: "auto" }}>
-        <div style={{ fontSize: "1.15rem", fontWeight: 700, marginBottom: 20, color: "var(--accent)", cursor: "pointer" }} onClick={() => setActiveTab("welcome")}>✦ ImageAI Studio</div>
+        <div style={{ fontSize: "1.15rem", fontWeight: 700, marginBottom: 20, color: "var(--accent)", cursor: "pointer" }} onClick={() => setActiveTab("welcome")}>ImageAI Studio</div>
         <SidebarBtn icon="🏠" label="Home" active={activeTab === "welcome"} onClick={() => setActiveTab("welcome")} />
         <SidebarBtn icon="🎨" label="Generate" active={activeTab === "generate"} onClick={() => setActiveTab("generate")} />
         <SidebarBtn icon="✏️" label="Edit" active={activeTab === "edit"} onClick={() => setActiveTab("edit")} />
@@ -62,7 +57,7 @@ export default function Home() {
             <div style={{ color: "var(--text-muted)" }}>{vram.allocated_gb} / {vram.total_gb} GB</div>
           </div>
         )}
-        <div style={{ fontSize: "0.7rem", color: "var(--text-muted)", padding: "0 4px" }}>FLUX Fill + Kontext + SDXL · Local GPU</div>
+        <div style={{ fontSize: "0.7rem", color: "var(--text-muted)", padding: "0 4px" }}>FLUX + SDXL + ControlNet · Local GPU</div>
         {backendOnline === false && (
           <div style={{ background: "rgba(248,113,113,0.12)", border: "1px solid rgba(248,113,113,0.3)", borderRadius: 8, padding: "6px 10px", fontSize: "0.72rem", color: "var(--error)", marginBottom: 8 }}>
             ⚠️ Backend offline
@@ -74,8 +69,8 @@ export default function Home() {
       </nav>
       <main style={{ flex: 1, padding: 32, overflowY: "auto", marginLeft: 220 }}>
         <div style={{ display: activeTab === "welcome" ? "block" : "none" }}><WelcomePage onNavigate={setActiveTab} /></div>
-        <div style={{ display: activeTab === "generate" ? "block" : "none" }}><GeneratePage onSendToEditor={handleSendToEditor} backendOnline={backendOnline} /></div>
-        <div style={{ display: activeTab === "edit" ? "block" : "none" }}><EditPage sentImage={sentImage} onClearSent={handleClearSent} backendOnline={backendOnline} /></div>
+        <div style={{ display: activeTab === "generate" ? "block" : "none" }}><GeneratePage onSendToEditor={handleSendToEditor} /></div>
+        <div style={{ display: activeTab === "edit" ? "block" : "none" }}><EditPage sentImage={sentImage} onClearSent={handleClearSent} /></div>
       </main>
     </div>
   );
@@ -102,7 +97,6 @@ function ProgressBar({ task, onCancel }: { task: string; onCancel: () => void })
         if (!alive) return;
         if (p.task === task && (p.active || p.status === "done" || p.status === "error")) {
           setProgress(p);
-          // Slow down polling when not actively stepping (loading_model, done, error)
           interval = p.status === "running" ? 300 : p.active ? 500 : 1500;
         }
       } catch { }
@@ -146,16 +140,6 @@ function ProgressBar({ task, onCancel }: { task: string; onCancel: () => void })
   );
 }
 
-function EnrichedPreview({ label, text }: { label: string; text: string }) {
-  if (!text) return null;
-  return (
-    <div style={{ background: "var(--bg-tertiary)", borderRadius: 8, padding: "8px 12px", border: "1px solid var(--border)", fontSize: "0.75rem" }}>
-      <div style={{ color: "var(--accent)", fontWeight: 600, marginBottom: 4, fontSize: "0.7rem" }}>{label}</div>
-      <div style={{ color: "var(--text-secondary)", lineHeight: 1.4, wordBreak: "break-word", maxHeight: 80, overflowY: "auto" }}>{text}</div>
-    </div>
-  );
-}
-
 // ═══════════════════════════════════════════
 // WELCOME PAGE
 // ═══════════════════════════════════════════
@@ -175,17 +159,17 @@ function WelcomePage({ onNavigate }: { onNavigate: (tab: "generate" | "edit") =>
         <div className="glass-card" style={{ padding: 28, cursor: "pointer" }} onClick={() => onNavigate("edit")}>
           <div style={{ fontSize: "2rem", marginBottom: 12 }}>✏️</div>
           <h3 style={{ fontSize: "1.1rem", fontWeight: 600, marginBottom: 8 }}>Edit</h3>
-          <p style={{ color: "var(--text-secondary)", fontSize: "0.85rem", lineHeight: 1.5 }}>Modify images with AI inpainting — click to select regions, auto-mask, prompt enrichment.</p>
+          <p style={{ color: "var(--text-secondary)", fontSize: "0.85rem", lineHeight: 1.5 }}>Modify images with AI inpainting — click to select regions, auto-mask, or use Kontext for mask-free editing.</p>
         </div>
       </div>
       <div className="glass-card" style={{ padding: 28 }}>
-        <h3 style={{ fontSize: "1.1rem", fontWeight: 600, marginBottom: 16 }}>📖 How to Use</h3>
+        <h3 style={{ fontSize: "1.1rem", fontWeight: 600, marginBottom: 16 }}>How to Use</h3>
         <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-          <Step n={1} title="Generate an Image" desc="Go to Generate → type a description → click Generate." />
-          <Step n={2} title="Send to Editor" desc="Click 'Send to Editor →' to transfer to the Edit workspace." />
+          <Step n={1} title="Generate an Image" desc="Go to Generate, type a description, click Generate." />
+          <Step n={2} title="Send to Editor" desc="Click 'Send to Editor' to transfer to the Edit workspace." />
           <Step n={3} title="Create a Mask" desc="Click on the image to select a region (SAM AI), or use Auto Mask for predefined areas." />
-          <Step n={4} title="Describe Your Edit" desc="Write what you want — 'red leather jacket', 'blonde hair' → click Apply." />
-          <Step n={5} title="Cancel Anytime" desc="Press the red Cancel button during generation/editing to stop immediately." />
+          <Step n={4} title="Describe Your Edit" desc="Write what you want — 'red leather jacket', 'blonde hair' — then click Apply." />
+          <Step n={5} title="Or Use Kontext" desc="Switch to Kontext mode for mask-free text-guided editing." />
         </div>
       </div>
       <div style={{ textAlign: "center", marginTop: 32 }}>
@@ -207,44 +191,22 @@ function Step({ n, title, desc }: { n: number; title: string; desc: string }) {
 // ═══════════════════════════════════════════
 // GENERATE PAGE
 // ═══════════════════════════════════════════
-function GeneratePage({ onSendToEditor, backendOnline }: { onSendToEditor: (img: string) => void; backendOnline: boolean | null }) {
+function GeneratePage({ onSendToEditor }: { onSendToEditor: (img: string) => void }) {
   const [prompt, setPrompt] = useState("");
   const [width, setWidth] = useState(1024);
   const [height, setHeight] = useState(1024);
   const [steps, setSteps] = useState(4);
   const [seed, setSeed] = useState(-1);
-  const [autoEnrich, setAutoEnrich] = useState(true);
-  const [enrichedPrompt, setEnrichedPrompt] = useState("");
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<GenerateResponse | null>(null);
-
-  // New state for generation presets
-  const [presets, setPresets] = useState<PresetInfo[]>([]);
-  const [selectedPresetId, setSelectedPresetId] = useState("general");
-
-  // Retry preset fetch when backend comes online (handles page-load-before-backend case)
-  useEffect(() => {
-    if (!backendOnline || presets.length > 0) return;
-    getGenPresets().then((res) => {
-      if (res.presets) setPresets(res.presets);
-    }).catch(() => { });
-  }, [backendOnline, presets.length]);
-
-  useEffect(() => {
-    if (!prompt.trim()) { setEnrichedPrompt(""); return; }
-    const t = setTimeout(async () => {
-      try { const r = await enrichFlux(prompt, autoEnrich, selectedPresetId); setEnrichedPrompt(r.positive); } catch { }
-    }, 300);
-    return () => clearTimeout(t);
-  }, [prompt, autoEnrich, selectedPresetId]);
 
   const handleGenerate = async () => {
     if (!prompt.trim()) return;
     setLoading(true); setResult(null);
     try {
-      const res = await generateImage({ prompt: autoEnrich ? enrichedPrompt || prompt : prompt, width, height, steps, seed });
+      const res = await generateImage({ prompt, width, height, steps, seed });
       setResult(res);
-    } catch (e: any) { setResult({ status: "error", error: e.message }); }
+    } catch (e: unknown) { setResult({ status: "error", error: e instanceof Error ? e.message : String(e) }); }
     setLoading(false);
   };
 
@@ -255,28 +217,10 @@ function GeneratePage({ onSendToEditor, backendOnline }: { onSendToEditor: (img:
   return (
     <div className="fade-in">
       <h1 style={{ fontSize: "1.5rem", fontWeight: 700, marginBottom: 4 }}>🎨 Generate</h1>
-      <p style={{ color: "var(--text-secondary)", marginBottom: 24, fontSize: "0.9rem" }}>Create photorealistic images from text using FLUX</p>
+      <p style={{ color: "var(--text-secondary)", marginBottom: 24, fontSize: "0.9rem" }}>Create images from text using FLUX Schnell (4-bit NF4)</p>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1.4fr", gap: 24 }}>
         <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
           <textarea className="input-field" rows={4} placeholder={"Describe the image...\ne.g., A woman in a red dress walking through a sunlit garden"} value={prompt} onChange={(e) => setPrompt(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleGenerate(); } }} />
-          <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
-            <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: "0.85rem", color: "var(--text-secondary)", cursor: "pointer" }}>
-              <input type="checkbox" checked={autoEnrich} onChange={(e) => setAutoEnrich(e.target.checked)} /> ✨ Photo-realistic enrich
-            </label>
-            {autoEnrich && presets.length > 0 && (
-              <select
-                className="input-field"
-                style={{ padding: "4px 8px", fontSize: "0.8rem", width: "180px" }}
-                value={selectedPresetId}
-                onChange={(e) => setSelectedPresetId(e.target.value)}
-              >
-                {presets.map(p => (
-                  <option key={p.id} value={p.id}>{p.label}</option>
-                ))}
-              </select>
-            )}
-          </div>
-          {enrichedPrompt && <EnrichedPreview label="📝 Final Prompt (sent to FLUX)" text={enrichedPrompt} />}
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
             <Slider label="Width" value={width} min={256} max={1536} step={64} onChange={setWidth} />
             <Slider label="Height" value={height} min={256} max={1536} step={64} onChange={setHeight} />
@@ -293,7 +237,7 @@ function GeneratePage({ onSendToEditor, backendOnline }: { onSendToEditor: (img:
           )}
           {result && !loading && (
             <div className="fade-in">
-              {result.status === "success" ? (<><div className="status-pill success">✓ Done in {result.elapsed}s · Seed: {result.seed}</div><div style={{ display: "flex", gap: 8, marginTop: 8 }}><button className="btn-secondary" style={{ flex: 1 }} onClick={() => result.image && onSendToEditor(`data:image/jpeg;base64,${result.image}`)}>📤 Send to Editor →</button><a href={`data:image/jpeg;base64,${result.image}`} download="generated.jpg" className="btn-secondary" style={{ padding: "8px 12px" }}>⬇️</a></div></>) : result.status === "cancelled" ? (<div className="status-pill" style={{ background: "rgba(255,165,0,0.15)", color: "orange" }}>⚠️ Cancelled</div>) : (<div className="status-pill error">✗ {result.error}</div>)}
+              {result.status === "success" ? (<><div className="status-pill success">Done in {result.elapsed}s · Seed: {result.seed}</div><div style={{ display: "flex", gap: 8, marginTop: 8 }}><button className="btn-secondary" style={{ flex: 1 }} onClick={() => result.image && onSendToEditor(`data:image/jpeg;base64,${result.image}`)}>📤 Send to Editor</button><a href={`data:image/jpeg;base64,${result.image}`} download="generated.jpg" className="btn-secondary" style={{ padding: "8px 12px" }}>⬇️</a></div></>) : result.status === "cancelled" ? (<div className="status-pill" style={{ background: "rgba(255,165,0,0.15)", color: "orange" }}>Cancelled</div>) : (<div className="status-pill error">{result.error}</div>)}
             </div>
           )}
         </div>
@@ -306,9 +250,9 @@ function GeneratePage({ onSendToEditor, backendOnline }: { onSendToEditor: (img:
 }
 
 // ═══════════════════════════════════════════
-// EDIT PAGE — Source+Overlay | Result layout
+// EDIT PAGE
 // ═══════════════════════════════════════════
-function EditPage({ sentImage, onClearSent, backendOnline }: { sentImage: string | null; onClearSent: () => void; backendOnline: boolean | null }) {
+function EditPage({ sentImage, onClearSent }: { sentImage: string | null; onClearSent: () => void }) {
   const [workingImage, setWorkingImage] = useState<string | null>(null);
   const [resultImage, setResultImage] = useState<string | null>(null);
   const [maskImage, setMaskImage] = useState<string | null>(null);
@@ -331,43 +275,24 @@ function EditPage({ sentImage, onClearSent, backendOnline }: { sentImage: string
   const [cnEnabled, setCnEnabled] = useState(false);
   const [cnType, setCnType] = useState("canny");
   const [cnScale, setCnScale] = useState(0.45);
-  const [enricherPreset, setEnricherPreset] = useState("general");
   const [protectFace, setProtectFace] = useState(false);
-  const [presets, setPresets] = useState<PresetInfo[]>([]);
   const [samMasks, setSamMasks] = useState<string[]>([]);
   const [samLabels, setSamLabels] = useState<string[]>([]);
   const [samSelected, setSamSelected] = useState(0);
   const [loading, setLoading] = useState(false);
   const [maskLoading, setMaskLoading] = useState(false);
   const [status, setStatus] = useState("");
-  const [enrichedPos, setEnrichedPos] = useState("");
-  const [enrichedNeg, setEnrichedNeg] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (sentImage && !workingImage) { setWorkingImage(sentImage); onClearSent(); }
   }, [sentImage, workingImage, onClearSent]);
 
-  // Load presets — retry when backend comes online (handles page-load-before-backend case)
-  useEffect(() => {
-    if (!backendOnline || presets.length > 0) return;
-    getPresets().then(r => setPresets(r.presets)).catch(() => { });
-  }, [backendOnline, presets.length]);
-
-  useEffect(() => {
-    if (!prompt.trim()) { setEnrichedPos(""); setEnrichedNeg(""); return; }
-    const t = setTimeout(async () => {
-      try { const r = await enrichPreview(prompt, negative, autoEnrich, enricherPreset); setEnrichedPos(r.positive); setEnrichedNeg(r.negative); } catch { }
-    }, 300);
-    return () => clearTimeout(t);
-  }, [prompt, negative, autoEnrich, enricherPreset]);
-
   const handleUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]; if (!file) return;
     const MAX_MB = 20;
-    if (file.size > MAX_MB * 1024 * 1024) { setStatus(`✗ File too large (max ${MAX_MB}MB)`); return; }
+    if (file.size > MAX_MB * 1024 * 1024) { setStatus(`File too large (max ${MAX_MB}MB)`); return; }
     const reader = new FileReader();
-    // Store full data URL (with MIME prefix) so format is preserved correctly
     reader.onload = () => { setWorkingImage(reader.result as string); setMaskImage(null); setResultImage(null); };
     reader.readAsDataURL(file);
   };
@@ -377,7 +302,7 @@ function EditPage({ sentImage, onClearSent, backendOnline }: { sentImage: string
     const rect = e.currentTarget.getBoundingClientRect();
     const x = (e.clientX - rect.left) / rect.width;
     const y = (e.clientY - rect.top) / rect.height;
-    setMaskLoading(true); setStatus("🧠 SAM analyzing click...");
+    setMaskLoading(true); setStatus("SAM analyzing click...");
     try {
       const blob = await fetch(workingImage).then(r => r.blob());
       const fd = new FormData();
@@ -391,9 +316,9 @@ function EditPage({ sentImage, onClearSent, backendOnline }: { sentImage: string
         const sel = res.selected ?? 0;
         setSamSelected(sel);
         setMaskImage(res.masks[sel]);
-        setStatus(`✓ ${res.masks.length} masks found — use S/M/L to toggle size`);
-      } else { setStatus(`✗ ${res.error || "No mask found"}`); }
-    } catch (e: any) { setStatus(`SAM error: ${e.message}`); }
+        setStatus(`${res.masks.length} masks found — use S/M/L to toggle size`);
+      } else { setStatus(res.error || "No mask found"); }
+    } catch (e: unknown) { setStatus(`SAM error: ${e instanceof Error ? e.message : String(e)}`); }
     setMaskLoading(false);
   };
 
@@ -405,9 +330,9 @@ function EditPage({ sentImage, onClearSent, backendOnline }: { sentImage: string
       const fd = new FormData();
       fd.append("image", blob, "image.png"); fd.append("target", maskTarget); fd.append("prompt", prompt);
       const res = await autoMask(fd);
-      if (res.masks && res.masks.length > 0) { setMaskImage(res.masks[0]); setStatus(`✓ Mask created`); }
+      if (res.masks && res.masks.length > 0) { setMaskImage(res.masks[0]); setStatus("Mask created"); }
       else { setStatus(res.error || "No masks found"); }
-    } catch (e: any) { setStatus(`Mask error: ${e.message}`); }
+    } catch (e: unknown) { setStatus(`Mask error: ${e instanceof Error ? e.message : String(e)}`); }
     setMaskLoading(false);
   };
 
@@ -429,10 +354,10 @@ function EditPage({ sentImage, onClearSent, backendOnline }: { sentImage: string
       fd.append("seed", String(seed));
       fd.append("working_long_side", String(workingLongSide));
       const res = await kontextEdit(fd);
-      if (res.status === "success" && res.image) { setResultImage(res.image); setStatus(`✓ Done in ${res.elapsed}s · Seed: ${res.seed}`); }
-      else if (res.status === "cancelled") { setStatus("⚠️ Cancelled"); }
-      else { setStatus(`✗ ${res.error}`); }
-    } catch (e: any) { setStatus(`Error: ${e.message}`); }
+      if (res.status === "success" && res.image) { setResultImage(res.image); setStatus(`Done in ${res.elapsed}s · Seed: ${res.seed}`); }
+      else if (res.status === "cancelled") { setStatus("Cancelled"); }
+      else { setStatus(res.error || "Error"); }
+    } catch (e: unknown) { setStatus(`Error: ${e instanceof Error ? e.message : String(e)}`); }
     setLoading(false);
   };
 
@@ -455,20 +380,17 @@ function EditPage({ sentImage, onClearSent, backendOnline }: { sentImage: string
       fd.append("use_controlnet", String(cnEnabled));
       fd.append("controlnet_type", cnType);
       fd.append("cn_scale", String(cnScale));
-      fd.append("enricher_preset", enricherPreset);
       fd.append("protect_face", String(protectFace));
       fd.append("engine", engine);
       const res = await editImage(fd);
-      if (res.status === "success" && res.image) { setResultImage(res.image); setStatus(`✓ Done in ${res.elapsed}s · Seed: ${res.seed}`); }
-      else if (res.status === "cancelled") { setStatus("⚠️ Cancelled"); }
-      else { setStatus(`✗ ${res.error}`); }
-    } catch (e: any) { setStatus(`Error: ${e.message}`); }
+      if (res.status === "success" && res.image) { setResultImage(res.image); setStatus(`Done in ${res.elapsed}s · Seed: ${res.seed}`); }
+      else if (res.status === "cancelled") { setStatus("Cancelled"); }
+      else { setStatus(res.error || "Error"); }
+    } catch (e: unknown) { setStatus(`Error: ${e instanceof Error ? e.message : String(e)}`); }
     setLoading(false);
   };
 
-  const activePreset = presets.find(p => p.id === enricherPreset);
-
-  // Auto-clear status messages after 5 s (but not while loading)
+  // Auto-clear status messages after 5s (but not while loading)
   useEffect(() => {
     if (!status || loading) return;
     const t = setTimeout(() => setStatus(""), 5000);
@@ -530,9 +452,9 @@ function EditPage({ sentImage, onClearSent, backendOnline }: { sentImage: string
             )}
             <input ref={fileInputRef} type="file" accept="image/*" style={{ display: "none" }} onChange={handleUpload} />
           </div>
-          {maskMode === "click" && workingImage && (
+          {maskMode === "click" && workingImage && editMode === "inpaint" && (
             <div style={{ fontSize: "0.75rem", color: "var(--text-muted)", textAlign: "center" }}>
-              👆 Click on the image to select a region with SAM AI
+              Click on the image to select a region with SAM AI
             </div>
           )}
         </div>
@@ -556,7 +478,7 @@ function EditPage({ sentImage, onClearSent, backendOnline }: { sentImage: string
       {/* Progress + Status */}
       {loading && <ProgressBar task="edit" onCancel={handleCancel} />}
       {status && !loading && (
-        <div className={`status-pill ${status.startsWith("✓") ? "success" : status.startsWith("✗") ? "error" : ""}`} style={{ marginBottom: 16 }}>{status}</div>
+        <div className={`status-pill ${status.startsWith("Done") ? "success" : status.startsWith("Cancelled") ? "" : status.includes("error") || status.includes("Error") ? "error" : ""}`} style={{ marginBottom: 16 }}>{status}</div>
       )}
 
       {/* BOTTOM: Controls */}
@@ -566,19 +488,23 @@ function EditPage({ sentImage, onClearSent, backendOnline }: { sentImage: string
           <div className="glass-card" style={{ padding: 16 }}>
             <h3 style={{ fontSize: "0.85rem", fontWeight: 600, marginBottom: 10 }}>💬 Prompt</h3>
             <textarea className="input-field" rows={2} placeholder="Describe what to change..." value={prompt} onChange={(e) => setPrompt(e.target.value)} style={{ fontSize: "0.85rem" }} />
-            <textarea className="input-field" rows={1} placeholder="Negative (optional)" value={negative} onChange={(e) => setNegative(e.target.value)} style={{ marginTop: 6, fontSize: "0.78rem" }} />
-            <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8 }}>
-              <label style={{ display: "flex", alignItems: "center", gap: 5, fontSize: "0.8rem", color: "var(--text-secondary)", cursor: "pointer" }}>
-                <input type="checkbox" checked={autoEnrich} onChange={(e) => setAutoEnrich(e.target.checked)} /> ✨ Auto-enrich
-              </label>
-            </div>
+            {editMode === "inpaint" && (
+              <textarea className="input-field" rows={1} placeholder="Negative (optional)" value={negative} onChange={(e) => setNegative(e.target.value)} style={{ marginTop: 6, fontSize: "0.78rem" }} />
+            )}
+            {editMode === "inpaint" && (
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8 }}>
+                <label style={{ display: "flex", alignItems: "center", gap: 5, fontSize: "0.8rem", color: "var(--text-secondary)", cursor: "pointer" }}>
+                  <input type="checkbox" checked={autoEnrich} onChange={(e) => setAutoEnrich(e.target.checked)} /> Auto negative prompt
+                </label>
+              </div>
+            )}
           </div>
 
           {editMode === "kontext" && (
             <div className="glass-card" style={{ padding: 16 }}>
-              <h3 style={{ fontSize: "0.85rem", fontWeight: 600, marginBottom: 8 }}>✨ Kontext Mode</h3>
+              <h3 style={{ fontSize: "0.85rem", fontWeight: 600, marginBottom: 8 }}>Kontext Mode</h3>
               <p style={{ fontSize: "0.78rem", color: "var(--text-secondary)", lineHeight: 1.5 }}>
-                Write a natural language instruction in the prompt box. No mask needed — FLUX Kontext edits only what you describe while preserving the rest of the image.
+                Write a natural language instruction. No mask needed — FLUX Kontext edits only what you describe while preserving the rest.
               </p>
               <div style={{ marginTop: 10, padding: "8px 10px", background: "var(--bg-primary)", borderRadius: 8, border: "1px solid var(--border)", fontSize: "0.72rem", color: "var(--text-muted)", lineHeight: 1.5 }}>
                 Examples:<br />
@@ -590,7 +516,7 @@ function EditPage({ sentImage, onClearSent, backendOnline }: { sentImage: string
           )}
           {editMode === "inpaint" && <div className="glass-card" style={{ padding: 16 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-              <h3 style={{ fontSize: "0.85rem", fontWeight: 600 }}>🎭 Mask Mode</h3>
+              <h3 style={{ fontSize: "0.85rem", fontWeight: 600 }}>🎭 Mask</h3>
               <div style={{ display: "flex", gap: 4 }}>
                 <button className={maskMode === "click" ? "btn-primary" : "btn-secondary"} style={{ padding: "3px 10px", fontSize: "0.72rem" }} onClick={() => setMaskMode("click")}>🖱️ Click (SAM)</button>
                 <button className={maskMode === "auto" ? "btn-primary" : "btn-secondary"} style={{ padding: "3px 10px", fontSize: "0.72rem" }} onClick={() => setMaskMode("auto")}>🎯 Auto</button>
@@ -599,14 +525,14 @@ function EditPage({ sentImage, onClearSent, backendOnline }: { sentImage: string
             {maskMode === "auto" && (
               <div style={{ display: "flex", gap: 6 }}>
                 <select className="input-field" style={{ padding: "6px 10px", flex: 1, fontSize: "0.8rem" }} value={maskTarget} onChange={(e) => setMaskTarget(e.target.value)}>
-                  <option value="top">Top (상의)</option>
-                  <option value="pants">Pants/Skirt (하의)</option>
-                  <option value="dress">Dress (원피스/전신)</option>
-                  <option value="hair">Hair (머리)</option>
-                  <option value="face">Face (얼굴)</option>
-                  <option value="accessories">Accessories (모자/가방 등)</option>
-                  <option value="background">Background (배경)</option>
-                  <option value="person">Person (전체인물)</option>
+                  <option value="top">Top</option>
+                  <option value="pants">Pants / Skirt</option>
+                  <option value="dress">Dress</option>
+                  <option value="hair">Hair</option>
+                  <option value="face">Face</option>
+                  <option value="accessories">Accessories</option>
+                  <option value="background">Background</option>
+                  <option value="person">Full Person</option>
                 </select>
                 <button className="btn-secondary" onClick={handleAutoMask} disabled={maskLoading || !workingImage} style={{ fontSize: "0.78rem" }}>
                   {maskLoading ? <span className="spinner" /> : "Generate"}
@@ -615,7 +541,7 @@ function EditPage({ sentImage, onClearSent, backendOnline }: { sentImage: string
             )}
             {maskMode === "click" && (
               <div style={{ fontSize: "0.78rem", color: "var(--text-secondary)", lineHeight: 1.4 }}>
-                Click on the source image to select a region. SAM AI will detect the object boundary automatically.
+                Click on the source image to select a region. SAM AI detects the object boundary automatically.
                 {samMasks.length > 0 && (
                   <div style={{ marginTop: 8, display: "flex", gap: 4, alignItems: "center" }}>
                     <span style={{ fontWeight: 600, marginRight: 4 }}>Size:</span>
@@ -635,40 +561,6 @@ function EditPage({ sentImage, onClearSent, backendOnline }: { sentImage: string
               <button className="btn-secondary" style={{ marginTop: 8, width: "100%", fontSize: "0.78rem", padding: "6px" }} onClick={() => { setMaskImage(null); setSamMasks([]); setSamLabels([]); setSamSelected(0); }}>🗑️ Clear Mask</button>
             )}
           </div>}
-
-          {/* Enricher Preset — inpaint only */}
-          {editMode === "kontext" ? null :
-          <div className="glass-card" style={{ padding: 16 }}>
-            <h3 style={{ fontSize: "0.85rem", fontWeight: 600, marginBottom: 10 }}>🧪 Edit Preset</h3>
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
-              {presets.map(p => (
-                <button key={p.id}
-                  className={enricherPreset === p.id ? "btn-primary" : "btn-secondary"}
-                  style={{ padding: "4px 10px", fontSize: "0.72rem", borderRadius: 16 }}
-                  onClick={() => {
-                    setEnricherPreset(p.id);
-                    setStrength(p.strength);
-                    setGuidance(p.guidance);
-                    setEditSteps(p.steps);
-                  }}>
-                  {p.label}
-                </button>
-              ))}
-            </div>
-            {activePreset && (
-              <div style={{ marginTop: 8, fontSize: "0.72rem", color: "var(--text-muted)", lineHeight: 1.4 }}>
-                {activePreset.description}
-                <span style={{ marginLeft: 8, color: "var(--accent)", fontWeight: 500 }}>
-                  S:{activePreset.strength} / G:{activePreset.guidance}
-                </span>
-              </div>
-            )}
-          </div>
-
-          }
-
-          {enrichedPos && editMode === "inpaint" && <EnrichedPreview label="📝 Final Positive" text={enrichedPos} />}
-          {enrichedNeg && editMode === "inpaint" && <EnrichedPreview label="🚫 Final Negative" text={enrichedNeg} />}
         </div>
 
         {/* Column 2: Settings */}
@@ -694,7 +586,7 @@ function EditPage({ sentImage, onClearSent, backendOnline }: { sentImage: string
           </div>
         </div>
 
-        {/* Column 3: Apply */}
+        {/* Column 3: Engine + Apply */}
         <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
           {editMode === "inpaint" && <div className="glass-card" style={{ padding: 16 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: cnEnabled ? 10 : 0 }}>
@@ -714,19 +606,18 @@ function EditPage({ sentImage, onClearSent, backendOnline }: { sentImage: string
                   ))}
                 </div>
                 <div style={{ fontSize: "0.72rem", color: "var(--text-secondary)", lineHeight: 1.4 }}>
-                  {cnType === "canny" && "🔲 Edge detection — preserves outlines and shapes"}
-                  {cnType === "depth" && "🌐 Depth map — maintains spatial proportions"}
-                  {cnType === "openpose" && "🦴 Skeleton — preserves human pose"}
+                  {cnType === "canny" && "Edge detection — preserves outlines and shapes"}
+                  {cnType === "depth" && "Depth map — maintains spatial proportions"}
+                  {cnType === "openpose" && "Skeleton — preserves human pose"}
                 </div>
                 <Slider label="Scale" value={cnScale} min={0.1} max={1} step={0.05} onChange={setCnScale} />
-                <div style={{ fontSize: "0.68rem", color: "var(--text-muted)" }}>⚠️ ControlNet uses extra VRAM. First run downloads model.</div>
               </div>
             )}
           </div>}
 
           {editMode === "inpaint" && (
             <div className="glass-card" style={{ padding: 12 }}>
-              <div style={{ fontSize: "0.78rem", color: "var(--text-secondary)", fontWeight: 600, marginBottom: 6 }}>🔧 Engine</div>
+              <div style={{ fontSize: "0.78rem", color: "var(--text-secondary)", fontWeight: 600, marginBottom: 6 }}>Engine</div>
               <div style={{ display: "flex", gap: 4 }}>
                 <button
                   className={engine === "sdxl" ? "btn-primary" : "btn-secondary"}
@@ -743,7 +634,7 @@ function EditPage({ sentImage, onClearSent, backendOnline }: { sentImage: string
               </div>
               {engine === "flux_fill" && (
                 <div style={{ fontSize: "0.68rem", color: "var(--text-muted)", marginTop: 5, lineHeight: 1.4 }}>
-                  Better mask boundary preservation · First run downloads ~24GB
+                  Better prompt adherence · First run downloads ~24GB
                 </div>
               )}
             </div>

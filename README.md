@@ -34,22 +34,24 @@ imageAI_public/
 │   │   └── vram.py       # Garbage collection & GPU memory state management
 │   └── routers/
 │       ├── generate.py   # POST /api/generate (FLUX endpoint)
-│       ├── edit.py       # POST /api/edit (SDXL + ControlNet endpoint)
-│       ├── mask.py       # POST /api/mask/auto (Segmentation endpoint)
+│       ├── edit.py       # POST /api/edit (SDXL + ControlNet + FLUX Fill)
+│       ├── kontext.py    # POST /api/kontext (FLUX Kontext mask-free edit)
+│       ├── mask.py       # POST /api/mask/auto, /click (Segmentation)
 │       └── system.py     # GET /api/vram, POST /api/clear (Ops endpoints)
 ├── frontend/             # Next.js Client
 │   └── src/app/
 │       ├── page.tsx      # Generation & Editing Canvas
 │       └── lib/api.ts    # Typed asynchronous API client
-├── prompt_enricher.py    # LLM-based prompt expansion logic
-└── segmentation/         # Custom wrappers for SAM and MediaPipe
+├── prompt_enricher.py    # Negative prompt defaults for SDXL
+├── segformer_masks.py    # SegFormer clothing segmentation (18-class)
+└── mp_tasks_utils.py     # MediaPipe person segmentation
 ```
 
 💻 Tech Stack
 
 - **Frontend**:  Next.js 16, TypeScript, Tailwind CSS
 - **Backend & Serving**:  FastAPI, Uvicorn, Python 3.11+
-- **ML/AI Models**:  FLUX Schnell, SDXL Inpaint, SDXL ControlNet
+- **ML/AI Models**:  FLUX Schnell, FLUX Fill, FLUX Kontext, SDXL Inpaint, SDXL ControlNet
 - **Computer Vision**:  SAM, MediaPipe, SegFormer (b2_clothes)
 - **Infra & Optimization**:  PyTorch, Diffusers, CUDA 12.x, xformers
 
