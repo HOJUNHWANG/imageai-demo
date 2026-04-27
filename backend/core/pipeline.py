@@ -6,23 +6,15 @@ import os
 import gc
 import time
 import torch
-import numpy as np
-from PIL import Image, ImageFilter
-from typing import Optional, Generator
 
 from diffusers import (
     StableDiffusionXLInpaintPipeline,
-    ControlNetModel,
-    StableDiffusionXLControlNetInpaintPipeline,
-    StableDiffusionXLImg2ImgPipeline,
     FluxPipeline,
 )
 
 from .config import (
-    DEVICE, MOCK_INPAINT, JUGGERNAUT_INPAINT, DEFAULT_MODEL,
-    CONTROLNET_DEPTH, CONTROLNET_OPENPOSE, CONTROLNET_CANNY,
-    LOW_VRAM, CPU_OFFLOAD, AUTO_UNLOAD_AUX, AUTO_HARD_CLEAR_THRESHOLD,
-    PUBLIC_DEMO, PUBLIC_MAX_STEPS, WEIGHTS_DIR, BASE_DIR, COMPILE_UNET,
+    DEVICE, JUGGERNAUT_INPAINT, DEFAULT_MODEL,
+    CPU_OFFLOAD, COMPILE_UNET,
     FLUX_FILL_MODEL, FLUX_KONTEXT_MODEL,
 )
 
@@ -33,25 +25,12 @@ except Exception:
 
 # ─── Global state ───
 pipe = None
-PIPE = None
+PIPE = None  # Legacy alias for pipe — referenced in _load_controlnet_pipe
 controlnet_pipes: dict = {}
-img2img_pipe = None
 txt2img_pipe = None
 fill_pipe = None
 kontext_pipe = None
 CURRENT_MODE = "edit"
-
-# Working image state
-STATE = {
-    "working_pil": None,
-    "working_np": None,
-    "orig_pil": None,
-    "manual_mask_u8": None,
-    "auto_mask_u8": None,
-    "active_mask_source": None,
-    "selected_mask": None,
-    "auto_mask_candidates": [],
-}
 
 
 def _aggressive_vram_cleanup():
@@ -68,17 +47,16 @@ def _aggressive_vram_cleanup():
 
 
 def unload_aux_pipelines():
-    """Unload optional pipelines (ControlNet + Refine) to recover VRAM."""
-    global controlnet_pipes, img2img_pipe
+    """Unload optional pipelines (ControlNet) to recover VRAM."""
+    global controlnet_pipes
     if isinstance(controlnet_pipes, dict):
         controlnet_pipes.clear()
-    img2img_pipe = None
     _aggressive_vram_cleanup()
 
 
 def hard_clear_vram():
     """Hard clear: unload all models from GPU."""
-    global pipe, PIPE, controlnet_pipes, img2img_pipe, txt2img_pipe, fill_pipe, kontext_pipe
+    global pipe, PIPE, controlnet_pipes, txt2img_pipe, fill_pipe, kontext_pipe
     pipe = None
     PIPE = None
     txt2img_pipe = None
@@ -88,7 +66,6 @@ def hard_clear_vram():
         controlnet_pipes.clear()
     else:
         controlnet_pipes = {}
-    img2img_pipe = None
     _aggressive_vram_cleanup()
     return {"message": "[VRAM][HARD] All pipelines unloaded."}
 
@@ -168,17 +145,28 @@ def _unload_aux_models():
 
 def get_inpaint_pipe():
     """Load or return the SDXL inpaint pipeline."""
-    global pipe, PIPE, txt2img_pipe
+    global pipe, PIPE, txt2img_pipe, fill_pipe, kontext_pipe
     if pipe is not None:
         return pipe
 
     # Free SAM / SegFormer VRAM before loading SDXL
     _unload_aux_models()
 
-    # Free txt2img if loaded
+    # Free all FLUX pipelines — each is ~6GB, loading SDXL on top would OOM
+    _needs_cleanup = False
     if txt2img_pipe is not None:
-        print("[PIPE] Unloading FLUX to free VRAM for SDXL...")
+        print("[PIPE] Unloading FLUX Schnell to free VRAM for SDXL...")
         txt2img_pipe = None
+        _needs_cleanup = True
+    if fill_pipe is not None:
+        print("[PIPE] Unloading FLUX Fill to free VRAM for SDXL...")
+        fill_pipe = None
+        _needs_cleanup = True
+    if kontext_pipe is not None:
+        print("[PIPE] Unloading FLUX Kontext to free VRAM for SDXL...")
+        kontext_pipe = None
+        _needs_cleanup = True
+    if _needs_cleanup:
         _aggressive_vram_cleanup()
 
     dtype = torch.float16 if DEVICE == "cuda" else torch.float32
@@ -222,18 +210,29 @@ def get_txt2img_pipe():
     """Load or return the FLUX text-to-image pipeline.
     Uses 4-bit quantization (NF4) to fit in 12GB VRAM.
     """
-    global pipe, PIPE, txt2img_pipe
+    global pipe, PIPE, txt2img_pipe, fill_pipe, kontext_pipe
     if txt2img_pipe is not None:
         return txt2img_pipe
 
     # Free SAM / SegFormer VRAM before loading FLUX
     _unload_aux_models()
 
-    # Unload SDXL to free all VRAM
+    # Unload all other pipelines to free VRAM
+    _needs_cleanup = False
     if pipe is not None:
-        print("[PIPE] Unloading SDXL to free VRAM for FLUX...")
+        print("[PIPE] Unloading SDXL to free VRAM for FLUX Schnell...")
         pipe = None
         PIPE = None
+        _needs_cleanup = True
+    if fill_pipe is not None:
+        print("[PIPE] Unloading FLUX Fill to free VRAM for FLUX Schnell...")
+        fill_pipe = None
+        _needs_cleanup = True
+    if kontext_pipe is not None:
+        print("[PIPE] Unloading FLUX Kontext to free VRAM for FLUX Schnell...")
+        kontext_pipe = None
+        _needs_cleanup = True
+    if _needs_cleanup:
         _aggressive_vram_cleanup()
 
     t0 = time.time()
@@ -267,6 +266,7 @@ def get_txt2img_pipe():
             print("[FLUX] Falling back to bfloat16 with sequential CPU offload...")
             txt2img_pipe = FluxPipeline.from_pretrained(
                 model_id, torch_dtype=torch.bfloat16,
+                low_cpu_mem_usage=True,
             )
             # sequential offload: moves individual layers (not modules), much less VRAM
             txt2img_pipe.enable_sequential_cpu_offload()
@@ -332,10 +332,15 @@ def get_fill_pipe():
             FLUX_FILL_MODEL,
             transformer=transformer,
             torch_dtype=torch.bfloat16,
+            low_cpu_mem_usage=True,
         )
         p.enable_model_cpu_offload()
         try:
             p.enable_vae_slicing()
+        except Exception:
+            pass
+        try:
+            p.enable_attention_slicing("auto")
         except Exception:
             pass
         fill_pipe = p
@@ -389,10 +394,15 @@ def get_kontext_pipe():
             FLUX_KONTEXT_MODEL,
             transformer=transformer,
             torch_dtype=torch.bfloat16,
+            low_cpu_mem_usage=True,
         )
         p.enable_model_cpu_offload()
         try:
             p.enable_vae_slicing()
+        except Exception:
+            pass
+        try:
+            p.enable_attention_slicing("auto")
         except Exception:
             pass
         kontext_pipe = p

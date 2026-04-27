@@ -6,30 +6,35 @@ Inference runs in a background thread so /api/progress stays responsive.
 import io
 import time
 import asyncio
-import gc
 import torch
 import numpy as np
 from fastapi import APIRouter, UploadFile, File, Form
 from PIL import Image, ImageFilter
-from typing import Literal, Optional
+from typing import Literal
 
 from ..core.pipeline import (
-    get_inpaint_pipe, switch_mode,
+    get_inpaint_pipe,
     controlnet_pipes, unload_aux_pipelines, hard_clear_vram,
-    STATE, cv2, _apply_optimizations, _aggressive_vram_cleanup,
+    cv2, _apply_optimizations, _aggressive_vram_cleanup,
 )
 from ..core.config import (
-    DEVICE, MOCK_INPAINT, AUTO_UNLOAD_AUX, AUTO_HARD_CLEAR_THRESHOLD,
+    DEVICE, AUTO_UNLOAD_AUX, AUTO_HARD_CLEAR_THRESHOLD,
     CONTROLNET_DEPTH, CONTROLNET_OPENPOSE, CONTROLNET_CANNY,
-    JUGGERNAUT_INPAINT, LOW_VRAM,
+    JUGGERNAUT_INPAINT,
 )
 from ..core.vram import get_vram_info
 from ..core.utils import pil_to_base64
-from .system import set_progress, reset_progress, make_step_callback, clear_cancel, check_cancel
+from .system import set_progress, make_step_callback, clear_cancel, check_cancel
 from . import system as _system_module
 
-import sys, os
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
+import sys
+import os
+
+# Project root must be on sys.path for top-level module imports (prompt_enricher, segformer_masks)
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
+
 from prompt_enricher import enrich_positive, enrich_negative
 
 router = APIRouter()
@@ -106,8 +111,14 @@ def _load_controlnet_pipe(cn_type: str):
     # 20-40 s) only for _load_controlnet_pipe to immediately unload it.
     from ..core import pipeline as _pl_mod
     if _pl_mod.txt2img_pipe is not None:
-        print("[CONTROLNET] Unloading FLUX to free VRAM...")
+        print("[CONTROLNET] Unloading FLUX Schnell to free VRAM...")
         _pl_mod.txt2img_pipe = None
+    if _pl_mod.fill_pipe is not None:
+        print("[CONTROLNET] Unloading FLUX Fill to free VRAM...")
+        _pl_mod.fill_pipe = None
+    if _pl_mod.kontext_pipe is not None:
+        print("[CONTROLNET] Unloading FLUX Kontext to free VRAM...")
+        _pl_mod.kontext_pipe = None
     if _pl_mod.pipe is not None:
         print("[CONTROLNET] Unloading base SDXL pipe to free VRAM...")
         _pl_mod.pipe = None
@@ -155,90 +166,25 @@ def _load_controlnet_pipe(cn_type: str):
     return cn_pipe
 
 
-def _encode_prompt_with_breaks(pipe, prompt: str, negative_prompt: str):
+def _encode_prompt(pipe, prompt: str, negative_prompt: str):
+    """Single encode_prompt call — SDXL dual CLIP handles 77 tokens each natively.
+    With CPU offload, each call moves CLIP-L+CLIP-G (~1.8 GB) CPU↔GPU,
+    so a single call is ~2-5s faster than multi-chunk approaches.
     """
-    Encodes long prompts by splitting them at the 'BREAK' keyword.
-    Each chunk is encoded up to 77 tokens, and the resulting embeddings
-    are concatenated along the sequence dimension to bypass the limit.
-    """
-    prompt = prompt or ""
-    negative_prompt = negative_prompt or ""
-
-    # Fast path: no BREAK → single encode_prompt call.
-    # With CPU offload, each call moves CLIP-L+CLIP-G (~1.8 GB) CPU↔GPU.
-    # 1 call instead of 2 halves text-encoding time (~2-5 s saved per run).
-    if "BREAK" not in prompt and "BREAK" not in negative_prompt:
-        pos_emb, neg_emb, pos_pool, neg_pool = pipe.encode_prompt(
-            prompt=prompt,
-            negative_prompt=negative_prompt,
-            device=pipe._execution_device,
-        )
-        return pos_emb, neg_emb, pos_pool, neg_pool
-
-    # 1. Split by BREAK
-    pos_chunks = [c.strip() for c in prompt.split("BREAK") if c.strip()]
-    neg_chunks = [c.strip() for c in negative_prompt.split("BREAK") if c.strip()]
-    
-    if not pos_chunks:
-        pos_chunks = [""]
-    if not neg_chunks:
-        neg_chunks = [""]
-        
-    # SDXL uses two text encoders. We need to collect embeddings for all chunks.
-    all_pos_embeds, all_pos_pooled = [], []
-    all_neg_embeds, all_neg_pooled = [], []
-    
-    # Process positive chunks
-    for chunk in pos_chunks:
-        # SDXL encode_prompt returns: (prompt_embeds, negative_prompt_embeds, pooled_prompt_embeds, negative_pooled_prompt_embeds)
-        # We pass empty strings for negative here to just extract the positive parts purely.
-        embeds, _, pooled, _ = pipe.encode_prompt(
-            prompt=chunk,
-            negative_prompt="",
-            device=pipe._execution_device
-        )
-        all_pos_embeds.append(embeds)
-        all_pos_pooled.append(pooled)
-        
-    # Process negative chunks
-    for chunk in neg_chunks:
-        _, neg_embeds, _, neg_pooled = pipe.encode_prompt(
-            prompt="",
-            negative_prompt=chunk,
-            device=pipe._execution_device
-        )
-        all_neg_embeds.append(neg_embeds)
-        all_neg_pooled.append(neg_pooled)
-        
-    # Concatenate sequence embeddings (dim=1 is the sequence length)
-    final_pos_embeds = torch.cat(all_pos_embeds, dim=1)
-    
-    # If negative chunks are fewer than positive, repeat the last negative chunk to match sequence length
-    if len(all_neg_embeds) < len(all_pos_embeds):
-        padding_needed = len(all_pos_embeds) - len(all_neg_embeds)
-        last_neg = all_neg_embeds[-1] if all_neg_embeds else torch.zeros_like(all_pos_embeds[0])
-        all_neg_embeds.extend([last_neg] * padding_needed)
-    elif len(all_pos_embeds) < len(all_neg_embeds):
-        padding_needed = len(all_neg_embeds) - len(all_pos_embeds)
-        last_pos = all_pos_embeds[-1]
-        all_pos_embeds.extend([last_pos] * padding_needed)
-        final_pos_embeds = torch.cat(all_pos_embeds, dim=1)
-
-    final_neg_embeds = torch.cat(all_neg_embeds[:len(all_pos_embeds)], dim=1)
-
-    # Pooled embeddings: take the first chunk (main subject intent). Standard for SDXL.
-    final_pos_pooled = all_pos_pooled[0]
-    final_neg_pooled = all_neg_pooled[0] if all_neg_pooled else torch.zeros_like(all_pos_pooled[0])
-
-    return final_pos_embeds, final_neg_embeds, final_pos_pooled, final_neg_pooled
+    pos_emb, neg_emb, pos_pool, neg_pool = pipe.encode_prompt(
+        prompt=prompt or "",
+        negative_prompt=negative_prompt or "",
+        device=pipe._execution_device,
+    )
+    return pos_emb, neg_emb, pos_pool, neg_pool
 
 
 def _run_edit(pil_image, pil_mask, prompt, negative, steps, strength, guidance, seed,
               auto_enrich, mask_expand, mask_blur,
               use_controlnet=False, controlnet_type="canny", cn_scale=0.45,
-              enricher_preset="general", protect_face=False, engine="sdxl"):
+              protect_face=False, engine="sdxl"):
     """Blocking inference — runs in a thread so async event loop stays free."""
-    from ..core.pipeline import get_inpaint_pipe, switch_mode, CURRENT_MODE as cm
+    from ..core.pipeline import get_inpaint_pipe
     clear_cancel()
 
     # Phase 1: Model loading
@@ -270,8 +216,8 @@ def _run_edit(pil_image, pil_mask, prompt, negative, steps, strength, guidance, 
     mask_pil_final = Image.fromarray(mask_u8).convert("L")
 
     if auto_enrich:
-        enriched_pos, info = enrich_positive(prompt, preset=enricher_preset)
-        enriched_neg = enrich_negative(negative, preset=enricher_preset)
+        enriched_pos = enrich_positive(prompt)
+        enriched_neg = enrich_negative(negative)
     else:
         enriched_pos = prompt
         enriched_neg = negative or ""
@@ -297,6 +243,10 @@ def _run_edit(pil_image, pil_mask, prompt, negative, steps, strength, guidance, 
         set_progress("edit", "running", f"FLUX Fill (0/{actual_steps})", 0, actual_steps)
         callback = make_step_callback("edit", actual_steps)
 
+        # FLUX Fill-dev requires high guidance (30) for coherent inpainting.
+        # Override the SDXL default (7.0) which produces blurry results with Fill.
+        fill_guidance = 30.0
+
         start = time.time()
         with torch.inference_mode():
             result_image = fill_p(
@@ -304,96 +254,98 @@ def _run_edit(pil_image, pil_mask, prompt, negative, steps, strength, guidance, 
                 image=pil_image,
                 mask_image=mask_pil_final,
                 num_inference_steps=steps,
-                guidance_scale=guidance,
+                guidance_scale=fill_guidance,
                 generator=gen,
+                max_sequence_length=512,
                 callback_on_step_end=callback,
             ).images[0]
         print("[FLUX FILL] Generation success!")
 
-    # ControlNet branch
-    # Actual steps run = int(steps * strength) due to diffusers strength scheduling
-    actual_steps = max(1, int(steps * strength))
+    # SDXL branches (ControlNet or base inpaint) — skip if FLUX Fill already produced a result
+    elif engine != "flux_fill":
+        # Actual steps run = int(steps * strength) due to diffusers strength scheduling
+        actual_steps = max(1, int(steps * strength))
 
-    if use_controlnet:
-        set_progress("edit", "loading_model", f"Loading ControlNet ({controlnet_type})...")
-        try:
-            cn_pipe = _load_controlnet_pipe(controlnet_type)
-            control_image = _preprocess_controlnet_image(pil_image, controlnet_type)
+        if use_controlnet:
+            set_progress("edit", "loading_model", f"Loading ControlNet ({controlnet_type})...")
+            try:
+                cn_pipe = _load_controlnet_pipe(controlnet_type)
+                control_image = _preprocess_controlnet_image(pil_image, controlnet_type)
 
-            set_progress("edit", "preprocessing", f"Encoding prompts for ControlNet ({controlnet_type})...")
+                set_progress("edit", "preprocessing", f"Encoding prompts for ControlNet ({controlnet_type})...")
 
-            # Encode prompt with BREAK logic
-            pos_emb, neg_emb, pos_pool, neg_pool = _encode_prompt_with_breaks(cn_pipe, enriched_pos, enriched_neg)
+                # Encode prompt
+                pos_emb, neg_emb, pos_pool, neg_pool = _encode_prompt(cn_pipe, enriched_pos, enriched_neg)
 
-            set_progress("edit", "running", f"ControlNet {controlnet_type} (0/{actual_steps})", 0, actual_steps)
+                set_progress("edit", "running", f"ControlNet {controlnet_type} (0/{actual_steps})", 0, actual_steps)
+                callback = make_step_callback("edit", actual_steps)
+
+                start = time.time()
+                with torch.inference_mode():
+                    result_image = cn_pipe(
+                        prompt_embeds=pos_emb,
+                        negative_prompt_embeds=neg_emb,
+                        pooled_prompt_embeds=pos_pool,
+                        negative_pooled_prompt_embeds=neg_pool,
+                        image=pil_image,
+                        mask_image=mask_pil_final,
+                        control_image=control_image,
+                        controlnet_conditioning_scale=float(cn_scale),
+                        num_inference_steps=steps,
+                        strength=strength,
+                        guidance_scale=guidance,
+                        generator=gen,
+                        callback_on_step_end=callback,
+                    ).images[0]
+                print("[CONTROLNET] Generation success!")
+            except RuntimeError as e:
+                if "CANCELLED_BY_USER" in str(e):
+                    raise  # Re-raise cancel
+                print(f"[CONTROLNET] Failed: {e} → falling back to base inpaint")
+                result_image = None
+            except Exception as e:
+                print(f"[CONTROLNET] Failed: {e} → falling back to base inpaint")
+                result_image = None
+
+        # Base inpaint (fallback or no ControlNet)
+        if result_image is None:
+            # If ControlNet was attempted and failed, its pipe (~8-10 GB) is still
+            # cached. Loading base SDXL (~6 GB) on top would exceed 12 GB → OOM.
+            # Clear the CN cache and free VRAM before proceeding.
+            if use_controlnet and controlnet_pipes:
+                controlnet_pipes.clear()
+                _aggressive_vram_cleanup()
+                set_progress("edit", "loading_model", "Loading base SDXL (ControlNet fallback)...")
+
+            p = get_inpaint_pipe()
+            if p is None:
+                set_progress("edit", "error", "Failed to load pipeline")
+                return {"error": "Failed to load inpaint pipeline.", "status": "error"}
+
+            set_progress("edit", "preprocessing", f"Encoding prompts ({actual_steps} steps)...")
+
+            # Encode prompt
+            pos_emb, neg_emb, pos_pool, neg_pool = _encode_prompt(p, enriched_pos, enriched_neg)
+
+            set_progress("edit", "running", f"Starting inpaint (0/{actual_steps})", 0, actual_steps)
+
             callback = make_step_callback("edit", actual_steps)
 
             start = time.time()
             with torch.inference_mode():
-                result_image = cn_pipe(
+                result_image = p(
                     prompt_embeds=pos_emb,
                     negative_prompt_embeds=neg_emb,
                     pooled_prompt_embeds=pos_pool,
                     negative_pooled_prompt_embeds=neg_pool,
                     image=pil_image,
                     mask_image=mask_pil_final,
-                    control_image=control_image,
-                    controlnet_conditioning_scale=float(cn_scale),
                     num_inference_steps=steps,
                     strength=strength,
                     guidance_scale=guidance,
                     generator=gen,
                     callback_on_step_end=callback,
                 ).images[0]
-            print("[CONTROLNET] Generation success!")
-        except RuntimeError as e:
-            if "CANCELLED_BY_USER" in str(e):
-                raise  # Re-raise cancel
-            print(f"[CONTROLNET] Failed: {e} → falling back to base inpaint")
-            result_image = None
-        except Exception as e:
-            print(f"[CONTROLNET] Failed: {e} → falling back to base inpaint")
-            result_image = None
-
-    # Base inpaint (fallback or no ControlNet)
-    if result_image is None:
-        # If ControlNet was attempted and failed, its pipe (~8-10 GB) is still
-        # cached. Loading base SDXL (~6 GB) on top would exceed 12 GB → OOM.
-        # Clear the CN cache and free VRAM before proceeding.
-        if use_controlnet and controlnet_pipes:
-            controlnet_pipes.clear()
-            _aggressive_vram_cleanup()
-            set_progress("edit", "loading_model", "Loading base SDXL (ControlNet fallback)...")
-
-        p = get_inpaint_pipe()
-        if p is None:
-            set_progress("edit", "error", "Failed to load pipeline")
-            return {"error": "Failed to load inpaint pipeline.", "status": "error"}
-
-        set_progress("edit", "preprocessing", f"Encoding prompts ({actual_steps} steps)...")
-
-        # Encode prompt with BREAK logic
-        pos_emb, neg_emb, pos_pool, neg_pool = _encode_prompt_with_breaks(p, enriched_pos, enriched_neg)
-
-        set_progress("edit", "running", f"Starting inpaint (0/{actual_steps})", 0, actual_steps)
-
-        callback = make_step_callback("edit", actual_steps)
-
-        start = time.time()
-        with torch.inference_mode():
-            result_image = p(
-                prompt_embeds=pos_emb,
-                negative_prompt_embeds=neg_emb,
-                pooled_prompt_embeds=pos_pool,
-                negative_pooled_prompt_embeds=neg_pool,
-                image=pil_image,
-                mask_image=mask_pil_final,
-                num_inference_steps=steps,
-                strength=strength,
-                guidance_scale=guidance,
-                generator=gen,
-                callback_on_step_end=callback,
-            ).images[0]
 
     # Hard composite: force pixel-perfect original preservation outside the mask.
     # The inpaint model may bleed minor changes at mask boundaries; this ensures
@@ -442,7 +394,6 @@ async def edit_image(
     use_controlnet: bool = Form(False),
     controlnet_type: Literal["canny", "depth", "openpose"] = Form("canny"),
     cn_scale: float = Form(0.45),
-    enricher_preset: str = Form("general"),
     protect_face: bool = Form(False),
     working_long_side: int = Form(1024),
     engine: Literal["sdxl", "flux_fill"] = Form("sdxl"),
@@ -468,7 +419,7 @@ async def edit_image(
         task = asyncio.create_task(asyncio.to_thread(
             _run_edit, pil_image, pil_mask, prompt, negative, steps, strength,
             guidance, seed, auto_enrich, mask_expand, mask_blur,
-            use_controlnet, controlnet_type, cn_scale, enricher_preset, protect_face, engine
+            use_controlnet, controlnet_type, cn_scale, protect_face, engine
         ))
         while not task.done():
             if _system_module.CANCEL_FLAG:

@@ -61,6 +61,7 @@ def _run_kontext(pil_image, prompt, steps, guidance, seed):
             num_inference_steps=steps,
             guidance_scale=guidance,
             generator=gen,
+            max_sequence_length=512,
             callback_on_step_end=callback,
         ).images[0]
 

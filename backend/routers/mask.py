@@ -7,11 +7,14 @@ import numpy as np
 from fastapi import APIRouter, UploadFile, File, Form
 from PIL import Image
 
-import sys, os
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
+import sys
+import os
 
-from ..core.pipeline import STATE
-from ..core.config import WEIGHTS_DIR, DEVICE
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
+
+from ..core.config import WEIGHTS_DIR
 
 router = APIRouter()
 
@@ -37,7 +40,6 @@ def _pil_to_base64(img) -> str:
 async def auto_mask(
     image: UploadFile = File(...),
     target: str = Form("top"),
-    prompt: str = Form(""),
 ):
     """Generate auto-mask using MediaPipe. Returns mask candidates."""
     try:
@@ -96,8 +98,9 @@ async def upload_image(
 
     w, h = pil.size
     scale = working_long_side / max(w, h)
-    nw = int(w * scale) // 8 * 8
-    nh = int(h * scale) // 8 * 8
+    # 64px alignment: SDXL UNet operates in 64px strides
+    nw = max(64, int(w * scale) // 64 * 64)
+    nh = max(64, int(h * scale) // 64 * 64)
     working = pil.resize((nw, nh), Image.LANCZOS)
 
     return {

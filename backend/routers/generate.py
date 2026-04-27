@@ -53,6 +53,10 @@ def _run_generate(prompt, width, height, steps, seed):
         s = int(torch.randint(0, 2**32 - 1, (1,)).item())
     gen = torch.Generator(device="cpu").manual_seed(s)
 
+    # FLUX VAE uses 16x downscale — align dimensions to prevent padding artifacts
+    width = max(256, (width // 16) * 16)
+    height = max(256, (height // 16) * 16)
+
     # Phase 2: Inference with step callback
     set_progress("generate", "running", f"Starting generation (0/{steps})", 0, steps)
     callback = make_step_callback("generate", steps)
@@ -66,6 +70,7 @@ def _run_generate(prompt, width, height, steps, seed):
             num_inference_steps=steps,
             generator=gen,
             guidance_scale=0.0,
+            max_sequence_length=512,
             callback_on_step_end=callback,
         )
 

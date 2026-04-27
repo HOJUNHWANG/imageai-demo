@@ -30,8 +30,6 @@ CONTROLNET_CANNY = "diffusers/controlnet-canny-sdxl-1.0"
 FLUX_FILL_MODEL = os.getenv("FLUX_FILL_MODEL", "black-forest-labs/FLUX.1-Fill-dev")
 FLUX_KONTEXT_MODEL = os.getenv("FLUX_KONTEXT_MODEL", "black-forest-labs/FLUX.1-Kontext-dev")
 
-MOCK_INPAINT = os.getenv("MOCK_INPAINT", "0") == "1"
-
 # torch.compile for SDXL UNet — 20-40% speedup after first run.
 # First load adds ~60-120s compilation time. Requires PyTorch 2.0+.
 COMPILE_UNET = os.getenv("COMPILE_UNET", "0") == "1"
@@ -72,4 +70,4 @@ def pick_device() -> str:
 DEVICE = pick_device()
 torch.set_float32_matmul_precision("high")
 
-print(f"DEVICE={DEVICE}, MOCK_INPAINT={MOCK_INPAINT}")
+print(f"DEVICE={DEVICE}")
