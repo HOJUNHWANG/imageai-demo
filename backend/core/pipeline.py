@@ -23,6 +23,7 @@ from .config import (
     CONTROLNET_DEPTH, CONTROLNET_OPENPOSE, CONTROLNET_CANNY,
     LOW_VRAM, CPU_OFFLOAD, AUTO_UNLOAD_AUX, AUTO_HARD_CLEAR_THRESHOLD,
     PUBLIC_DEMO, PUBLIC_MAX_STEPS, WEIGHTS_DIR, BASE_DIR, COMPILE_UNET,
+    FLUX_FILL_MODEL, FLUX_KONTEXT_MODEL,
 )
 
 try:
@@ -36,6 +37,8 @@ PIPE = None
 controlnet_pipes: dict = {}
 img2img_pipe = None
 txt2img_pipe = None
+fill_pipe = None
+kontext_pipe = None
 CURRENT_MODE = "edit"
 
 # Working image state
@@ -75,10 +78,12 @@ def unload_aux_pipelines():
 
 def hard_clear_vram():
     """Hard clear: unload all models from GPU."""
-    global pipe, PIPE, controlnet_pipes, img2img_pipe, txt2img_pipe
+    global pipe, PIPE, controlnet_pipes, img2img_pipe, txt2img_pipe, fill_pipe, kontext_pipe
     pipe = None
     PIPE = None
     txt2img_pipe = None
+    fill_pipe = None
+    kontext_pipe = None
     if isinstance(controlnet_pipes, dict):
         controlnet_pipes.clear()
     else:
@@ -282,6 +287,120 @@ def get_txt2img_pipe():
         return txt2img_pipe
     except Exception as e:
         print(f"[FLUX] Load failed: {e}")
+        return None
+
+
+def get_fill_pipe():
+    """Load or return the FLUX.1-Fill-dev inpainting pipeline with NF4 quantization."""
+    global fill_pipe, pipe, PIPE, txt2img_pipe, kontext_pipe
+    if fill_pipe is not None:
+        return fill_pipe
+
+    _unload_aux_models()
+
+    if pipe is not None:
+        print("[PIPE] Unloading SDXL to free VRAM for FLUX Fill...")
+        pipe = None
+        PIPE = None
+    if txt2img_pipe is not None:
+        print("[PIPE] Unloading FLUX Schnell to free VRAM for FLUX Fill...")
+        txt2img_pipe = None
+    if kontext_pipe is not None:
+        print("[PIPE] Unloading FLUX Kontext to free VRAM for FLUX Fill...")
+        kontext_pipe = None
+    if isinstance(controlnet_pipes, dict):
+        controlnet_pipes.clear()
+    _aggressive_vram_cleanup()
+
+    t0 = time.time()
+    try:
+        from diffusers import FluxFillPipeline, FluxTransformer2DModel
+        from diffusers import BitsAndBytesConfig as DiffusersBnBConfig
+
+        quant_config = DiffusersBnBConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_dtype=torch.bfloat16,
+        )
+        print("[FLUX FILL] Loading transformer (NF4)...")
+        transformer = FluxTransformer2DModel.from_pretrained(
+            FLUX_FILL_MODEL, subfolder="transformer",
+            quantization_config=quant_config,
+            torch_dtype=torch.bfloat16,
+        )
+        p = FluxFillPipeline.from_pretrained(
+            FLUX_FILL_MODEL,
+            transformer=transformer,
+            torch_dtype=torch.bfloat16,
+        )
+        p.enable_model_cpu_offload()
+        try:
+            p.enable_vae_slicing()
+        except Exception:
+            pass
+        fill_pipe = p
+        print(f"[FLUX FILL] Ready in {time.time()-t0:.1f}s")
+        return fill_pipe
+    except Exception as e:
+        print(f"[FLUX FILL] Load failed: {e}")
+        fill_pipe = None
+        return None
+
+
+def get_kontext_pipe():
+    """Load or return the FLUX.1-Kontext-dev text-guided editing pipeline with NF4 quantization."""
+    global kontext_pipe, pipe, PIPE, txt2img_pipe, fill_pipe
+    if kontext_pipe is not None:
+        return kontext_pipe
+
+    _unload_aux_models()
+
+    if pipe is not None:
+        print("[PIPE] Unloading SDXL to free VRAM for FLUX Kontext...")
+        pipe = None
+        PIPE = None
+    if txt2img_pipe is not None:
+        print("[PIPE] Unloading FLUX Schnell to free VRAM for FLUX Kontext...")
+        txt2img_pipe = None
+    if fill_pipe is not None:
+        print("[PIPE] Unloading FLUX Fill to free VRAM for FLUX Kontext...")
+        fill_pipe = None
+    if isinstance(controlnet_pipes, dict):
+        controlnet_pipes.clear()
+    _aggressive_vram_cleanup()
+
+    t0 = time.time()
+    try:
+        from diffusers import FluxKontextPipeline, FluxTransformer2DModel
+        from diffusers import BitsAndBytesConfig as DiffusersBnBConfig
+
+        quant_config = DiffusersBnBConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_dtype=torch.bfloat16,
+        )
+        print("[FLUX KONTEXT] Loading transformer (NF4)...")
+        transformer = FluxTransformer2DModel.from_pretrained(
+            FLUX_KONTEXT_MODEL, subfolder="transformer",
+            quantization_config=quant_config,
+            torch_dtype=torch.bfloat16,
+        )
+        p = FluxKontextPipeline.from_pretrained(
+            FLUX_KONTEXT_MODEL,
+            transformer=transformer,
+            torch_dtype=torch.bfloat16,
+        )
+        p.enable_model_cpu_offload()
+        try:
+            p.enable_vae_slicing()
+        except Exception:
+            pass
+        kontext_pipe = p
+        print(f"[FLUX KONTEXT] Ready in {time.time()-t0:.1f}s")
+        return kontext_pipe
+    except Exception as e:
+        print(f"[FLUX KONTEXT] Load failed: {e}")
+        kontext_pipe = None
         return None
 
 

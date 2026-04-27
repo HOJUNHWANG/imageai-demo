@@ -82,6 +82,23 @@ export async function editImage(formData: FormData): Promise<EditResponse> {
     return (await checkResponse(res)).json();
 }
 
+export interface KontextResponse {
+    image?: string;
+    seed?: number;
+    elapsed?: number;
+    status: string;
+    error?: string;
+    vram?: VramInfo;
+}
+
+export async function kontextEdit(formData: FormData): Promise<KontextResponse> {
+    const res = await fetch(`${API_BASE}/kontext`, {
+        method: "POST",
+        body: formData,
+    });
+    return (await checkResponse(res)).json();
+}
+
 // ─── Mask ───
 export async function autoMask(formData: FormData): Promise<MaskResponse> {
     const res = await fetch(`${API_BASE}/mask/auto`, {

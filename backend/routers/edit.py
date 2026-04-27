@@ -236,22 +236,19 @@ def _encode_prompt_with_breaks(pipe, prompt: str, negative_prompt: str):
 def _run_edit(pil_image, pil_mask, prompt, negative, steps, strength, guidance, seed,
               auto_enrich, mask_expand, mask_blur,
               use_controlnet=False, controlnet_type="canny", cn_scale=0.45,
-              enricher_preset="general", protect_face=False):
+              enricher_preset="general", protect_face=False, engine="sdxl"):
     """Blocking inference — runs in a thread so async event loop stays free."""
     from ..core.pipeline import get_inpaint_pipe, switch_mode, CURRENT_MODE as cm
     clear_cancel()
 
     # Phase 1: Model loading
-    # set_progress("loading_model") first in both branches so started_at is
-    # initialized and the elapsed timer runs from the very beginning of the request.
-    if use_controlnet:
-        # Skip loading base SDXL — _load_controlnet_pipe handles all model switching
-        # (including FLUX unload). Loading SDXL here would waste 20-40 s only to
-        # unload it immediately after.
+    if engine == "flux_fill":
+        set_progress("edit", "loading_model", "Loading FLUX Fill pipeline...")
+    elif use_controlnet:
         set_progress("edit", "loading_model", f"Preparing ControlNet ({controlnet_type})...")
     else:
         set_progress("edit", "loading_model", "Loading SDXL inpaint pipeline...")
-        get_inpaint_pipe()  # 항상 여기서 로드 — cm 분기와 무관하게 캐시 보장
+        get_inpaint_pipe()
 
     check_cancel("edit")  # Cancel check after model load
 
@@ -287,6 +284,31 @@ def _run_edit(pil_image, pil_mask, prompt, negative, steps, strength, guidance, 
     check_cancel("edit")  # Cancel check before inference
 
     result_image = None
+
+    # FLUX Fill branch
+    if engine == "flux_fill":
+        from ..core.pipeline import get_fill_pipe
+        fill_p = get_fill_pipe()
+        if fill_p is None:
+            set_progress("edit", "error", "Failed to load FLUX Fill pipeline")
+            return {"error": "Failed to load FLUX Fill pipeline.", "status": "error"}
+
+        actual_steps = steps
+        set_progress("edit", "running", f"FLUX Fill (0/{actual_steps})", 0, actual_steps)
+        callback = make_step_callback("edit", actual_steps)
+
+        start = time.time()
+        with torch.inference_mode():
+            result_image = fill_p(
+                prompt=enriched_pos,
+                image=pil_image,
+                mask_image=mask_pil_final,
+                num_inference_steps=steps,
+                guidance_scale=guidance,
+                generator=gen,
+                callback_on_step_end=callback,
+            ).images[0]
+        print("[FLUX FILL] Generation success!")
 
     # ControlNet branch
     # Actual steps run = int(steps * strength) due to diffusers strength scheduling
@@ -373,6 +395,18 @@ def _run_edit(pil_image, pil_mask, prompt, negative, steps, strength, guidance, 
                 callback_on_step_end=callback,
             ).images[0]
 
+    # Hard composite: force pixel-perfect original preservation outside the mask.
+    # The inpaint model may bleed minor changes at mask boundaries; this ensures
+    # anything outside the mask is the exact original pixel.
+    if result_image is not None:
+        if result_image.size != pil_image.size:
+            result_image = result_image.resize(pil_image.size, Image.LANCZOS)
+        result_image = Image.composite(
+            result_image.convert("RGB"),
+            pil_image.convert("RGB"),
+            mask_pil_final,
+        )
+
     # Phase 4: Encoding
     set_progress("edit", "encoding", "Encoding result...")
     elapsed = round(time.time() - start, 2)
@@ -411,6 +445,7 @@ async def edit_image(
     enricher_preset: str = Form("general"),
     protect_face: bool = Form(False),
     working_long_side: int = Form(1024),
+    engine: Literal["sdxl", "flux_fill"] = Form("sdxl"),
 ):
     """Apply SDXL inpainting — runs inference in a thread so progress polling works."""
     _MAX_UPLOAD = 25 * 1024 * 1024  # 25 MB
@@ -433,7 +468,7 @@ async def edit_image(
         task = asyncio.create_task(asyncio.to_thread(
             _run_edit, pil_image, pil_mask, prompt, negative, steps, strength,
             guidance, seed, auto_enrich, mask_expand, mask_blur,
-            use_controlnet, controlnet_type, cn_scale, enricher_preset, protect_face
+            use_controlnet, controlnet_type, cn_scale, enricher_preset, protect_face, engine
         ))
         while not task.done():
             if _system_module.CANCEL_FLAG:

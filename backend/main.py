@@ -12,7 +12,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from .routers import generate, edit, mask, system
+from .routers import generate, edit, mask, system, kontext
 
 
 @asynccontextmanager
@@ -43,5 +43,6 @@ app.add_middleware(
 # API routers
 app.include_router(generate.router, prefix="/api", tags=["generate"])
 app.include_router(edit.router, prefix="/api", tags=["edit"])
+app.include_router(kontext.router, prefix="/api", tags=["kontext"])
 app.include_router(mask.router, prefix="/api", tags=["mask"])
 app.include_router(system.router, prefix="/api", tags=["system"])

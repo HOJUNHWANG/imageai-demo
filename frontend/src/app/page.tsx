@@ -4,6 +4,7 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import {
   generateImage,
   editImage,
+  kontextEdit,
   autoMask,
   clickMask,
   getProgress,
@@ -15,6 +16,7 @@ import {
   getGenPresets,
   type GenerateResponse,
   type EditResponse,
+  type KontextResponse,
   type PresetInfo,
   type ProgressInfo,
   type VramInfo,
@@ -60,7 +62,7 @@ export default function Home() {
             <div style={{ color: "var(--text-muted)" }}>{vram.allocated_gb} / {vram.total_gb} GB</div>
           </div>
         )}
-        <div style={{ fontSize: "0.7rem", color: "var(--text-muted)", padding: "0 4px" }}>SDXL Inpaint + FLUX · Local GPU</div>
+        <div style={{ fontSize: "0.7rem", color: "var(--text-muted)", padding: "0 4px" }}>FLUX Fill + Kontext + SDXL · Local GPU</div>
         {backendOnline === false && (
           <div style={{ background: "rgba(248,113,113,0.12)", border: "1px solid rgba(248,113,113,0.3)", borderRadius: 8, padding: "6px 10px", fontSize: "0.72rem", color: "var(--error)", marginBottom: 8 }}>
             ⚠️ Backend offline
@@ -322,6 +324,10 @@ function EditPage({ sentImage, onClearSent, backendOnline }: { sentImage: string
   const [maskExpand, setMaskExpand] = useState(10);
   const [maskBlur, setMaskBlur] = useState(18);
   const [workingLongSide, setWorkingLongSide] = useState(1024);
+  const [editMode, setEditMode] = useState<"inpaint" | "kontext">("inpaint");
+  const [engine, setEngine] = useState<"sdxl" | "flux_fill">("sdxl");
+  const [kontextSteps, setKontextSteps] = useState(28);
+  const [kontextGuidance, setKontextGuidance] = useState(2.5);
   const [cnEnabled, setCnEnabled] = useState(false);
   const [cnType, setCnType] = useState("canny");
   const [cnScale, setCnScale] = useState(0.45);
@@ -409,6 +415,27 @@ function EditPage({ sentImage, onClearSent, backendOnline }: { sentImage: string
     try { await cancelInference(); } catch { }
   };
 
+  const handleApplyKontext = async () => {
+    if (!workingImage) { setStatus("Upload an image first"); return; }
+    if (!prompt.trim()) { setStatus("Enter an instruction (e.g. 'change the red shirt to blue')"); return; }
+    setLoading(true); setStatus(""); setResultImage(null);
+    try {
+      const imgBlob = await fetch(workingImage).then(r => r.blob());
+      const fd = new FormData();
+      fd.append("image", imgBlob, "image.png");
+      fd.append("prompt", prompt);
+      fd.append("steps", String(kontextSteps));
+      fd.append("guidance", String(kontextGuidance));
+      fd.append("seed", String(seed));
+      fd.append("working_long_side", String(workingLongSide));
+      const res = await kontextEdit(fd);
+      if (res.status === "success" && res.image) { setResultImage(res.image); setStatus(`✓ Done in ${res.elapsed}s · Seed: ${res.seed}`); }
+      else if (res.status === "cancelled") { setStatus("⚠️ Cancelled"); }
+      else { setStatus(`✗ ${res.error}`); }
+    } catch (e: any) { setStatus(`Error: ${e.message}`); }
+    setLoading(false);
+  };
+
   const handleApply = async () => {
     if (!workingImage) { setStatus("Upload an image first"); return; }
     if (!maskImage) { setStatus("Create a mask first"); return; }
@@ -430,6 +457,7 @@ function EditPage({ sentImage, onClearSent, backendOnline }: { sentImage: string
       fd.append("cn_scale", String(cnScale));
       fd.append("enricher_preset", enricherPreset);
       fd.append("protect_face", String(protectFace));
+      fd.append("engine", engine);
       const res = await editImage(fd);
       if (res.status === "success" && res.image) { setResultImage(res.image); setStatus(`✓ Done in ${res.elapsed}s · Seed: ${res.seed}`); }
       else if (res.status === "cancelled") { setStatus("⚠️ Cancelled"); }
@@ -449,8 +477,26 @@ function EditPage({ sentImage, onClearSent, backendOnline }: { sentImage: string
 
   return (
     <div className="fade-in">
-      <h1 style={{ fontSize: "1.5rem", fontWeight: 700, marginBottom: 4 }}>✏️ Edit</h1>
-      <p style={{ color: "var(--text-secondary)", marginBottom: 20, fontSize: "0.9rem" }}>Click to select · Auto mask · AI inpainting</p>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4 }}>
+        <h1 style={{ fontSize: "1.5rem", fontWeight: 700 }}>✏️ Edit</h1>
+        <div style={{ display: "flex", gap: 6, background: "var(--bg-tertiary)", borderRadius: 10, padding: 4, border: "1px solid var(--border)" }}>
+          <button
+            className={editMode === "inpaint" ? "btn-primary" : "btn-secondary"}
+            style={{ padding: "5px 14px", fontSize: "0.8rem" }}
+            onClick={() => setEditMode("inpaint")}>
+            🎭 Inpaint
+          </button>
+          <button
+            className={editMode === "kontext" ? "btn-primary" : "btn-secondary"}
+            style={{ padding: "5px 14px", fontSize: "0.8rem" }}
+            onClick={() => setEditMode("kontext")}>
+            ✨ Kontext
+          </button>
+        </div>
+      </div>
+      <p style={{ color: "var(--text-secondary)", marginBottom: 20, fontSize: "0.9rem" }}>
+        {editMode === "inpaint" ? "Click to select · Auto mask · AI inpainting" : "Text-guided editing — no mask needed · Preserves original image"}
+      </p>
 
       {/* TOP ROW: Source+Overlay | Result */}
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20, marginBottom: 20 }}>
@@ -528,7 +574,21 @@ function EditPage({ sentImage, onClearSent, backendOnline }: { sentImage: string
             </div>
           </div>
 
-          <div className="glass-card" style={{ padding: 16 }}>
+          {editMode === "kontext" && (
+            <div className="glass-card" style={{ padding: 16 }}>
+              <h3 style={{ fontSize: "0.85rem", fontWeight: 600, marginBottom: 8 }}>✨ Kontext Mode</h3>
+              <p style={{ fontSize: "0.78rem", color: "var(--text-secondary)", lineHeight: 1.5 }}>
+                Write a natural language instruction in the prompt box. No mask needed — FLUX Kontext edits only what you describe while preserving the rest of the image.
+              </p>
+              <div style={{ marginTop: 10, padding: "8px 10px", background: "var(--bg-primary)", borderRadius: 8, border: "1px solid var(--border)", fontSize: "0.72rem", color: "var(--text-muted)", lineHeight: 1.5 }}>
+                Examples:<br />
+                "Change the red shirt to blue"<br />
+                "Make the hair blonde"<br />
+                "Replace the background with a beach"
+              </div>
+            </div>
+          )}
+          {editMode === "inpaint" && <div className="glass-card" style={{ padding: 16 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
               <h3 style={{ fontSize: "0.85rem", fontWeight: 600 }}>🎭 Mask Mode</h3>
               <div style={{ display: "flex", gap: 4 }}>
@@ -574,9 +634,10 @@ function EditPage({ sentImage, onClearSent, backendOnline }: { sentImage: string
             {maskImage && (
               <button className="btn-secondary" style={{ marginTop: 8, width: "100%", fontSize: "0.78rem", padding: "6px" }} onClick={() => { setMaskImage(null); setSamMasks([]); setSamLabels([]); setSamSelected(0); }}>🗑️ Clear Mask</button>
             )}
-          </div>
+          </div>}
 
-          {/* Enricher Preset */}
+          {/* Enricher Preset — inpaint only */}
+          {editMode === "kontext" ? null :
           <div className="glass-card" style={{ padding: 16 }}>
             <h3 style={{ fontSize: "0.85rem", fontWeight: 600, marginBottom: 10 }}>🧪 Edit Preset</h3>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
@@ -604,12 +665,14 @@ function EditPage({ sentImage, onClearSent, backendOnline }: { sentImage: string
             )}
           </div>
 
-          {enrichedPos && <EnrichedPreview label="📝 Final Positive" text={enrichedPos} />}
-          {enrichedNeg && <EnrichedPreview label="🚫 Final Negative" text={enrichedNeg} />}
+          }
+
+          {enrichedPos && editMode === "inpaint" && <EnrichedPreview label="📝 Final Positive" text={enrichedPos} />}
+          {enrichedNeg && editMode === "inpaint" && <EnrichedPreview label="🚫 Final Negative" text={enrichedNeg} />}
         </div>
 
         {/* Column 2: Settings */}
-        <div className="glass-card" style={{ padding: 16 }}>
+        <div className="glass-card" style={{ padding: 16, display: editMode === "kontext" ? "none" : undefined }}>
           <h3 style={{ fontSize: "0.85rem", fontWeight: 600, marginBottom: 10 }}>⚙️ Settings</h3>
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             <Slider label="Strength" value={strength} min={0.3} max={0.95} step={0.05} onChange={setStrength} />
@@ -633,7 +696,7 @@ function EditPage({ sentImage, onClearSent, backendOnline }: { sentImage: string
 
         {/* Column 3: Apply */}
         <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-          <div className="glass-card" style={{ padding: 16 }}>
+          {editMode === "inpaint" && <div className="glass-card" style={{ padding: 16 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: cnEnabled ? 10 : 0 }}>
               <label style={{ display: "flex", alignItems: "center", gap: 5, fontSize: "0.85rem", fontWeight: 600, cursor: "pointer" }}>
                 <input type="checkbox" checked={cnEnabled} onChange={(e) => setCnEnabled(e.target.checked)} /> 🔗 ControlNet
@@ -659,11 +722,50 @@ function EditPage({ sentImage, onClearSent, backendOnline }: { sentImage: string
                 <div style={{ fontSize: "0.68rem", color: "var(--text-muted)" }}>⚠️ ControlNet uses extra VRAM. First run downloads model.</div>
               </div>
             )}
-          </div>
+          </div>}
 
+          {editMode === "inpaint" && (
+            <div className="glass-card" style={{ padding: 12 }}>
+              <div style={{ fontSize: "0.78rem", color: "var(--text-secondary)", fontWeight: 600, marginBottom: 6 }}>🔧 Engine</div>
+              <div style={{ display: "flex", gap: 4 }}>
+                <button
+                  className={engine === "sdxl" ? "btn-primary" : "btn-secondary"}
+                  style={{ flex: 1, padding: "5px 0", fontSize: "0.75rem" }}
+                  onClick={() => setEngine("sdxl")}>
+                  SDXL
+                </button>
+                <button
+                  className={engine === "flux_fill" ? "btn-primary" : "btn-secondary"}
+                  style={{ flex: 1, padding: "5px 0", fontSize: "0.75rem" }}
+                  onClick={() => setEngine("flux_fill")}>
+                  FLUX Fill
+                </button>
+              </div>
+              {engine === "flux_fill" && (
+                <div style={{ fontSize: "0.68rem", color: "var(--text-muted)", marginTop: 5, lineHeight: 1.4 }}>
+                  Better mask boundary preservation · First run downloads ~24GB
+                </div>
+              )}
+            </div>
+          )}
+          {editMode === "kontext" ? (
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              <div className="glass-card" style={{ padding: 12 }}>
+                <Slider label="Steps" value={kontextSteps} min={10} max={50} step={1} onChange={setKontextSteps} />
+                <div style={{ marginTop: 8 }}>
+                  <Slider label="Guidance" value={kontextGuidance} min={1} max={5} step={0.5} onChange={setKontextGuidance} />
+                </div>
+                <div style={{ marginTop: 8 }}><label style={{ fontSize: "0.78rem", color: "var(--text-secondary)", marginBottom: 3, display: "block" }}>Seed</label><input type="number" className="input-field" placeholder="-1 = random" value={seed} onChange={(e) => setSeed(Number(e.target.value))} style={{ padding: "5px 8px", fontSize: "0.82rem" }} /></div>
+              </div>
+              <button className="btn-primary" onClick={handleApplyKontext} disabled={loading || !workingImage} style={{ padding: "14px 0", fontSize: "0.95rem" }}>
+                {loading ? (<><span className="spinner" /> Applying Kontext...</>) : "✨ Apply Kontext Edit"}
+              </button>
+            </div>
+          ) : (
           <button className="btn-primary" onClick={handleApply} disabled={loading || !workingImage} style={{ padding: "14px 0", fontSize: "0.95rem" }}>
-            {loading ? (<><span className="spinner" /> Applying...</>) : cnEnabled ? `▶️ Apply with ${cnType}` : "▶️ Apply Edit"}
+            {loading ? (<><span className="spinner" /> Applying...</>) : engine === "flux_fill" ? "▶️ Apply (FLUX Fill)" : cnEnabled ? `▶️ Apply with ${cnType}` : "▶️ Apply Edit"}
           </button>
+          )}
           {resultImage && (
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
               <button className="btn-secondary" style={{ width: "100%", fontSize: "0.85rem" }}

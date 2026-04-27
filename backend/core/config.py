@@ -27,6 +27,9 @@ CONTROLNET_DEPTH = "diffusers/controlnet-depth-sdxl-1.0"
 CONTROLNET_OPENPOSE = "thibaud/controlnet-openpose-sdxl-1.0"
 CONTROLNET_CANNY = "diffusers/controlnet-canny-sdxl-1.0"
 
+FLUX_FILL_MODEL = os.getenv("FLUX_FILL_MODEL", "black-forest-labs/FLUX.1-Fill-dev")
+FLUX_KONTEXT_MODEL = os.getenv("FLUX_KONTEXT_MODEL", "black-forest-labs/FLUX.1-Kontext-dev")
+
 MOCK_INPAINT = os.getenv("MOCK_INPAINT", "0") == "1"
 
 # torch.compile for SDXL UNet — 20-40% speedup after first run.
