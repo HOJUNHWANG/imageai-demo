@@ -30,7 +30,7 @@ class GenerateRequest(BaseModel):
 
 def _run_generate(prompt, width, height, steps, seed):
     """Blocking inference — runs in a thread so async event loop stays free."""
-    from ..core.pipeline import get_txt2img_pipe, switch_mode, CURRENT_MODE as cm
+    from ..core.pipeline import CURRENT_MODE as cm
     clear_cancel()
 
     # Phase 1: Model loading

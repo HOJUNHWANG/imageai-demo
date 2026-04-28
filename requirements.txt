@@ -8,7 +8,7 @@
 diffusers==0.37.1
 transformers==4.48.3
 accelerate==1.13.0
-huggingface_hub==1.12.0
+huggingface_hub==0.36.2
 
 # Backend Server
 fastapi==0.136.1

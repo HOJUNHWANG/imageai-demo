@@ -20,7 +20,7 @@ from ..core.pipeline import (
 from ..core.config import (
     DEVICE, AUTO_UNLOAD_AUX, AUTO_HARD_CLEAR_THRESHOLD,
     CONTROLNET_DEPTH, CONTROLNET_OPENPOSE, CONTROLNET_CANNY,
-    JUGGERNAUT_INPAINT,
+    JUGGERNAUT_INPAINT, DEFAULT_MODEL,
 )
 from ..core.vram import get_vram_info
 from ..core.utils import pil_to_base64
@@ -144,8 +144,6 @@ def _load_controlnet_pipe(cn_type: str):
 
     # Reverted from_pipe because it causes extreme deadlocks with accelerate's CPU offload hooks
     # when _apply_optimizations is called again on the shared modules.
-    from ..core.config import JUGGERNAUT_INPAINT, DEFAULT_MODEL
-    
     if os.path.exists(JUGGERNAUT_INPAINT):
         cn_pipe = StableDiffusionXLControlNetInpaintPipeline.from_single_file(
             JUGGERNAUT_INPAINT, controlnet=controlnet,
@@ -183,7 +181,6 @@ def _run_edit(pil_image, pil_mask, prompt, negative, steps, strength, guidance, 
               use_controlnet=False, controlnet_type="canny", cn_scale=0.45,
               protect_face=False, engine="sdxl"):
     """Blocking inference — runs in a thread so async event loop stays free."""
-    from ..core.pipeline import get_inpaint_pipe
     clear_cancel()
 
     # Phase 1: Model loading
