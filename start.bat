@@ -43,10 +43,17 @@ set VENV_PY=%~dp0venv311\Scripts\python.exe
 :: ── Step 3: Install Python dependencies ──────────────────────────────────────
 echo [3/5] Checking Python dependencies...
 
-:: Clean up any corrupted partial installs (e.g. ~orch, ~ympy left by interrupted pip)
+:: Clean up corrupted partial installs (e.g. ~orch, ~ympy left by interrupted pip)
 for /d %%D in ("%~dp0venv311\Lib\site-packages\~*") do (
     echo        Removing corrupted package: %%~nxD
     rmdir /s /q "%%D" >nul 2>&1
+)
+
+:: Remove xformers if present — incompatible with torch 2.6+cu124
+"%VENV_PY%" -c "import xformers" >nul 2>&1
+if not errorlevel 1 (
+    echo        Removing xformers ^(incompatible with current torch^)...
+    "%VENV_PY%" -m pip uninstall xformers -y -q
 )
 
 :: Determine GPU presence once
