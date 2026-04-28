@@ -73,17 +73,38 @@ if "!NEED_INSTALL!"=="1" (
         exit /b 1
     )
 
-    :: Check for NVIDIA GPU and install xformers if available
+    :: NVIDIA GPU check — install CUDA-enabled PyTorch and GPU extras
     nvidia-smi >nul 2>&1
     if not errorlevel 1 (
-        echo        NVIDIA GPU detected — installing GPU extras ^(xformers^)...
+        echo        NVIDIA GPU detected — checking PyTorch CUDA support...
+        "%VENV_PY%" -c "import torch; exit(0 if torch.cuda.is_available() else 1)" >nul 2>&1
+        if errorlevel 1 (
+            echo        PyTorch has no CUDA support — reinstalling CUDA version...
+            "%VENV_PY%" -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124 --force-reinstall -q
+        ) else (
+            echo        PyTorch CUDA OK.
+        )
+        echo        Installing GPU extras ^(xformers^)...
         "%VENV_PY%" -m pip install -r "%~dp0requirements-gpu.txt" -q
+    ) else (
+        echo        No NVIDIA GPU detected — running in CPU mode.
     )
 
     echo %REQ_SIG%> "%SENTINEL%"
     echo        Dependencies installed.
 ) else (
     echo        Dependencies up to date.
+    :: Even when deps are cached, verify CUDA PyTorch is installed
+    nvidia-smi >nul 2>&1
+    if not errorlevel 1 (
+        "%VENV_PY%" -c "import torch; exit(0 if torch.cuda.is_available() else 1)" >nul 2>&1
+        if errorlevel 1 (
+            echo        WARNING: PyTorch has no CUDA support — reinstalling CUDA version...
+            "%VENV_PY%" -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124 --force-reinstall -q
+            echo        CUDA PyTorch reinstalled. Clearing sentinel to force full check next run.
+            del "%SENTINEL%" >nul 2>&1
+        )
+    )
 )
 
 :: ── Step 4: Install frontend dependencies ────────────────────────────────────
