@@ -1,3 +1,3 @@
 # GPU extras — installed by start.bat after CUDA torch is confirmed.
 # Do NOT include torch here (handled separately to pick the right CUDA version).
-xformers==0.0.35
+# xformers removed: compatibility issues across torch versions; Flash SDP used instead.

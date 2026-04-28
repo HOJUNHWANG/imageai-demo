@@ -102,15 +102,6 @@ if "!NEED_INSTALL!"=="1" (
     echo        Packages up to date.
 )
 
-:: ── 3c: GPU extras (xformers) ────────────────────────────────────────────────
-if "%HAS_GPU%"=="1" (
-    "%VENV_PY%" -c "import xformers" >nul 2>&1
-    if errorlevel 1 (
-        echo        Installing xformers...
-        "%VENV_PY%" -m pip install -r "%~dp0requirements-gpu.txt" -q
-    )
-)
-
 :: ── Step 4: Install frontend dependencies ────────────────────────────────────
 echo [4/5] Checking frontend dependencies...
 if not exist "%~dp0frontend\node_modules\.package-lock.json" (
