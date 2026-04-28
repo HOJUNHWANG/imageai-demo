@@ -3,12 +3,15 @@ Mask router: auto-masking endpoints.
 Fixed: pass (pil, helper) to build_*_mask functions.
 """
 import io
+import logging
 import numpy as np
 from fastapi import APIRouter, UploadFile, File, Form
 from PIL import Image
 
 import sys
 import os
+
+logger = logging.getLogger(__name__)
 
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
 if _PROJECT_ROOT not in sys.path:
@@ -82,8 +85,7 @@ async def auto_mask(
             "status": "success",
         }
     except Exception as e:
-        import traceback
-        traceback.print_exc()
+        logger.exception("[MASK] auto_mask failed")
         return {"error": str(e), "status": "error", "masks": []}
 
 
@@ -122,12 +124,12 @@ def _load_sam():
         return
     import torch
     from transformers import SamModel, SamProcessor
-    print("[SAM] Loading SAM model (facebook/sam-vit-large)...")
+    logger.info("[SAM] Loading SAM model (facebook/sam-vit-large)...")
     _sam_processor = SamProcessor.from_pretrained("facebook/sam-vit-large")
     _sam_model = SamModel.from_pretrained("facebook/sam-vit-large")
     if torch.cuda.is_available():
         _sam_model = _sam_model.to("cuda")
-    print("[SAM] Model ready.")
+    logger.info("[SAM] Model ready.")
 
 
 def _unload_sam():
@@ -141,7 +143,7 @@ def _unload_sam():
     gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
-    print("[SAM] Model unloaded.")
+    logger.info("[SAM] Model unloaded.")
 
 
 @router.post("/mask/click")
@@ -204,8 +206,7 @@ async def click_mask(
             "status": "success",
         }
     except Exception as e:
-        import traceback
-        traceback.print_exc()
+        logger.exception("[SAM] click_mask failed")
         _unload_sam()
         return {"error": str(e), "status": "error"}
 

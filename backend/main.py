@@ -3,9 +3,17 @@ ImageAI Studio — FastAPI Backend
 """
 import sys
 import os
+import logging
 
 # Ensure project root is on path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+
+logging.basicConfig(
+    level=os.getenv("LOG_LEVEL", "INFO").upper(),
+    format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
+    datefmt="%H:%M:%S",
+)
+logger = logging.getLogger(__name__)
 
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
@@ -18,9 +26,9 @@ from .routers import generate, edit, mask, system, kontext
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup/shutdown lifecycle. Models lazy-load on first request."""
-    print("[BOOT] ImageAI Studio backend ready (models will lazy-load on first request).")
+    logger.info("[BOOT] ImageAI Studio backend ready (models will lazy-load on first request).")
     yield
-    print("[SHUTDOWN] Cleaning up...")
+    logger.info("[SHUTDOWN] Cleaning up...")
 
 
 app = FastAPI(

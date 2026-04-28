@@ -10,11 +10,17 @@ Classes (ATR dataset):
 16=Bag, 17=Scarf
 """
 import gc
+import time
+import logging
 import numpy as np
 from PIL import Image
 
+logger = logging.getLogger(__name__)
+
 _segformer_model = None
 _segformer_processor = None
+_segformer_last_use: float = 0.0
+_SEGFORMER_IDLE_TTL = 300  # unload after 5 minutes idle
 
 
 def _load_segformer():
@@ -23,7 +29,7 @@ def _load_segformer():
         return
     import torch
     from transformers import SegformerImageProcessor, SegformerForSemanticSegmentation
-    print("[SegFormer] Loading segformer_b2_clothes...")
+    logger.info("[SegFormer] Loading segformer_b2_clothes...")
     _segformer_processor = SegformerImageProcessor.from_pretrained(
         "mattmdjaga/segformer_b2_clothes"
     )
@@ -33,7 +39,7 @@ def _load_segformer():
     if torch.cuda.is_available():
         _segformer_model = _segformer_model.to("cuda")
     _segformer_model.eval()
-    print("[SegFormer] Model ready.")
+    logger.info("[SegFormer] Model ready.")
 
 
 def _unload_segformer():
@@ -47,13 +53,25 @@ def _unload_segformer():
     gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
-    print("[SegFormer] Model unloaded.")
+    logger.info("[SegFormer] Model unloaded.")
+
+
+def maybe_unload_segformer_if_idle():
+    """Unload SegFormer if it has been idle for longer than the TTL."""
+    global _segformer_last_use
+    if _segformer_model is None:
+        return
+    if time.monotonic() - _segformer_last_use > _SEGFORMER_IDLE_TTL:
+        logger.info("[SegFormer] Idle timeout — unloading to free VRAM.")
+        _unload_segformer()
 
 
 def _get_segmentation_map(pil: Image.Image) -> np.ndarray:
     """Run SegFormer and return full segmentation map (H, W) with class IDs."""
+    global _segformer_last_use
     import torch
     _load_segformer()
+    _segformer_last_use = time.monotonic()
     inputs = _segformer_processor(images=pil, return_tensors="pt")
     if torch.cuda.is_available():
         inputs = {k: v.to("cuda") for k, v in inputs.items()}

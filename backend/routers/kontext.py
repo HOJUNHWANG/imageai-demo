@@ -13,7 +13,6 @@ from ..core.pipeline import get_kontext_pipe, hard_clear_vram
 from ..core.utils import pil_to_base64
 from ..core.vram import get_vram_info
 from .system import set_progress, make_step_callback, clear_cancel, check_cancel
-from . import system as _system_module
 
 router = APIRouter()
 
@@ -98,15 +97,9 @@ async def kontext_edit(
 
         pil_image = _resize_to_long_side(pil_image, working_long_side)
 
-        task = asyncio.create_task(asyncio.to_thread(
+        result = await asyncio.to_thread(
             _run_kontext, pil_image, prompt, steps, guidance, seed
-        ))
-        while not task.done():
-            if _system_module.CANCEL_FLAG:
-                return {"error": "Cancelled by user.", "status": "cancelled"}
-            await asyncio.sleep(0.25)
-
-        result = task.result()
+        )
         return result
     except RuntimeError as e:
         if "CANCELLED_BY_USER" in str(e):

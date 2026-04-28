@@ -2,7 +2,10 @@
 System router: VRAM monitoring, cleanup, and inference progress tracking.
 """
 import time
+import logging
 from fastapi import APIRouter
+
+logger = logging.getLogger(__name__)
 from ..core.vram import get_vram_info, get_vram_text, soft_clear_vram
 from ..core.pipeline import hard_clear_vram, unload_aux_pipelines
 
@@ -49,7 +52,7 @@ CANCEL_FLAG = False
 def request_cancel():
     global CANCEL_FLAG
     CANCEL_FLAG = True
-    print("[CANCEL] Cancel requested by user")
+    logger.info("[CANCEL] Cancel requested by user")
 
 
 def clear_cancel():
@@ -64,7 +67,7 @@ def check_cancel(task: str = "", pipe=None):
             set_progress(task, "error", "Cancelled by user")
         if pipe and hasattr(pipe, "_interrupt"):
             pipe._interrupt = True
-        print(f"[CANCEL] Cancel detected in {task or 'unknown'}")
+        logger.info(f"[CANCEL] Cancel detected in {task or 'unknown'}")
         raise RuntimeError("CANCELLED_BY_USER")
 
 
@@ -72,7 +75,7 @@ def make_step_callback(task: str, total_steps: int):
     """Create a diffusers pipeline callback that updates progress and checks cancel."""
     def callback(pipe, step, timestep, kwargs):
         if CANCEL_FLAG:
-            print(f"[CANCEL] Cancel detected at step {step + 1}/{total_steps}")
+            logger.info(f"[CANCEL] Cancel detected at step {step + 1}/{total_steps}")
             set_progress(task, "error", "Cancelled by user")
             if hasattr(pipe, "_interrupt"):
                 pipe._interrupt = True

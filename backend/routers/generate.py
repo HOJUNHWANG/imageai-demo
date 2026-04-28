@@ -14,7 +14,6 @@ from ..core.vram import get_vram_info
 from ..core.utils import pil_to_base64
 from ..core.config import DEVICE
 from .system import set_progress, reset_progress, make_step_callback, clear_cancel, check_cancel
-from . import system as _system_module
 
 router = APIRouter()
 
@@ -94,15 +93,9 @@ def _run_generate(prompt, width, height, steps, seed):
 async def generate_image(req: GenerateRequest):
     """Generate an image — runs inference in a thread so progress polling works."""
     try:
-        task = asyncio.create_task(asyncio.to_thread(
+        result = await asyncio.to_thread(
             _run_generate, req.prompt, req.width, req.height, req.steps, req.seed
-        ))
-        while not task.done():
-            if _system_module.CANCEL_FLAG:
-                return {"error": "Cancelled by user.", "status": "cancelled"}
-            await asyncio.sleep(0.25)
-            
-        result = task.result()
+        )
         return result
     except RuntimeError as e:
         if "CANCELLED_BY_USER" in str(e):

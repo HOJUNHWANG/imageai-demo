@@ -1,0 +1,4 @@
+# GPU extras — install AFTER requirements.txt on machines with a CUDA GPU.
+# Usage: pip install -r requirements.txt -r requirements-gpu.txt
+-r requirements.txt
+xformers==0.0.35
