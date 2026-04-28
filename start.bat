@@ -65,8 +65,8 @@ if exist "%SENTINEL%" (
 
 if "!NEED_INSTALL!"=="1" (
     echo        Installing / updating packages from requirements.txt...
-    "%VENV_PIP%" install --upgrade pip -q
-    "%VENV_PIP%" install -r "%REQ_FILE%" -q
+    "%VENV_PY%" -m pip install --upgrade pip -q
+    "%VENV_PY%" -m pip install -r "%REQ_FILE%" -q
     if errorlevel 1 (
         echo [ERROR] pip install failed. Check your internet connection.
         pause
@@ -77,7 +77,7 @@ if "!NEED_INSTALL!"=="1" (
     nvidia-smi >nul 2>&1
     if not errorlevel 1 (
         echo        NVIDIA GPU detected — installing GPU extras ^(xformers^)...
-        "%VENV_PIP%" install -r "%~dp0requirements-gpu.txt" -q
+        "%VENV_PY%" -m pip install -r "%~dp0requirements-gpu.txt" -q
     )
 
     echo %REQ_SIG%> "%SENTINEL%"
