@@ -314,22 +314,33 @@ def get_fill_pipe():
         t0 = time.time()
         try:
             from diffusers import FluxFillPipeline, FluxTransformer2DModel
-            from diffusers import BitsAndBytesConfig as DiffusersBnBConfig
 
-            quant_config = DiffusersBnBConfig(
-                load_in_4bit=True, bnb_4bit_quant_type="nf4",
-                bnb_4bit_compute_dtype=torch.bfloat16,
-            )
-            logger.info("[FLUX FILL] Loading transformer (NF4)...")
-            transformer = FluxTransformer2DModel.from_pretrained(
-                FLUX_FILL_MODEL, subfolder="transformer",
-                quantization_config=quant_config, torch_dtype=torch.bfloat16,
-            )
-            p = FluxFillPipeline.from_pretrained(
-                FLUX_FILL_MODEL, transformer=transformer,
-                torch_dtype=torch.bfloat16, low_cpu_mem_usage=True,
-            )
-            p.enable_model_cpu_offload()
+            try:
+                from diffusers import BitsAndBytesConfig as DiffusersBnBConfig
+                quant_config = DiffusersBnBConfig(
+                    load_in_4bit=True, bnb_4bit_quant_type="nf4",
+                    bnb_4bit_compute_dtype=torch.bfloat16,
+                )
+                logger.info("[FLUX FILL] Loading transformer (NF4)...")
+                transformer = FluxTransformer2DModel.from_pretrained(
+                    FLUX_FILL_MODEL, subfolder="transformer",
+                    quantization_config=quant_config, torch_dtype=torch.bfloat16,
+                )
+                p = FluxFillPipeline.from_pretrained(
+                    FLUX_FILL_MODEL, transformer=transformer,
+                    torch_dtype=torch.bfloat16, low_cpu_mem_usage=True,
+                )
+                p.enable_model_cpu_offload()
+                logger.info("  [FLUX FILL] ✓ 4-bit quantization + CPU offload")
+            except Exception as quant_err:
+                logger.warning(f"  [FLUX FILL] ⚠ 4-bit quantization failed: {quant_err}")
+                logger.info("[FLUX FILL] Falling back to bfloat16 + sequential CPU offload...")
+                p = FluxFillPipeline.from_pretrained(
+                    FLUX_FILL_MODEL, torch_dtype=torch.bfloat16, low_cpu_mem_usage=True,
+                )
+                p.enable_sequential_cpu_offload()
+                logger.info("  [FLUX FILL] ✓ Sequential CPU offload (slowest, but fits any GPU)")
+
             try:
                 p.enable_vae_slicing()
             except Exception:
@@ -374,22 +385,33 @@ def get_kontext_pipe():
         t0 = time.time()
         try:
             from diffusers import FluxKontextPipeline, FluxTransformer2DModel
-            from diffusers import BitsAndBytesConfig as DiffusersBnBConfig
 
-            quant_config = DiffusersBnBConfig(
-                load_in_4bit=True, bnb_4bit_quant_type="nf4",
-                bnb_4bit_compute_dtype=torch.bfloat16,
-            )
-            logger.info("[FLUX KONTEXT] Loading transformer (NF4)...")
-            transformer = FluxTransformer2DModel.from_pretrained(
-                FLUX_KONTEXT_MODEL, subfolder="transformer",
-                quantization_config=quant_config, torch_dtype=torch.bfloat16,
-            )
-            p = FluxKontextPipeline.from_pretrained(
-                FLUX_KONTEXT_MODEL, transformer=transformer,
-                torch_dtype=torch.bfloat16, low_cpu_mem_usage=True,
-            )
-            p.enable_model_cpu_offload()
+            try:
+                from diffusers import BitsAndBytesConfig as DiffusersBnBConfig
+                quant_config = DiffusersBnBConfig(
+                    load_in_4bit=True, bnb_4bit_quant_type="nf4",
+                    bnb_4bit_compute_dtype=torch.bfloat16,
+                )
+                logger.info("[FLUX KONTEXT] Loading transformer (NF4)...")
+                transformer = FluxTransformer2DModel.from_pretrained(
+                    FLUX_KONTEXT_MODEL, subfolder="transformer",
+                    quantization_config=quant_config, torch_dtype=torch.bfloat16,
+                )
+                p = FluxKontextPipeline.from_pretrained(
+                    FLUX_KONTEXT_MODEL, transformer=transformer,
+                    torch_dtype=torch.bfloat16, low_cpu_mem_usage=True,
+                )
+                p.enable_model_cpu_offload()
+                logger.info("  [FLUX KONTEXT] ✓ 4-bit quantization + CPU offload")
+            except Exception as quant_err:
+                logger.warning(f"  [FLUX KONTEXT] ⚠ 4-bit quantization failed: {quant_err}")
+                logger.info("[FLUX KONTEXT] Falling back to bfloat16 + sequential CPU offload...")
+                p = FluxKontextPipeline.from_pretrained(
+                    FLUX_KONTEXT_MODEL, torch_dtype=torch.bfloat16, low_cpu_mem_usage=True,
+                )
+                p.enable_sequential_cpu_offload()
+                logger.info("  [FLUX KONTEXT] ✓ Sequential CPU offload (slowest, but fits any GPU)")
+
             try:
                 p.enable_vae_slicing()
             except Exception:
