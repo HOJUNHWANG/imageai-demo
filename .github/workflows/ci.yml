@@ -22,7 +22,7 @@ jobs:
 
       - name: Syntax check
         run: |
-          python -m py_compile backend/main.py mp_tasks_utils.py sam_utils.py prompt_enricher.py segformer_masks.py
+          python -m py_compile backend/main.py mp_tasks_utils.py prompt_enricher.py segformer_masks.py
 
       - name: Doctor (expected to fail if weights missing)
         run: |
