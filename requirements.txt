@@ -1,10 +1,8 @@
 # Core — CPU-safe (no GPU-only packages here)
-# Pin exact versions for reproducible builds.
-# GPU extras (xformers) → requirements-gpu.txt
-# Dev tools (ruff, pytest) → requirements-dev.txt
-
-torch==2.11.0
-torchvision==0.26.0
+# NOTE: torch/torchvision are intentionally excluded here.
+#       start.bat installs CUDA-enabled torch before this file.
+#       GPU extras (xformers) → requirements-gpu.txt
+#       Dev tools (ruff, pytest) → requirements-dev.txt
 
 # AI Pipeline
 diffusers==0.37.1

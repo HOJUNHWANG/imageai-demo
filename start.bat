@@ -12,8 +12,7 @@ echo [0/5] Checking Python...
 where python >nul 2>&1
 if errorlevel 1 (
     echo [ERROR] Python not found. Install Python 3.11 from https://python.org
-    pause
-    exit /b 1
+    pause & exit /b 1
 )
 for /f "tokens=2 delims= " %%v in ('python --version 2^>^&1') do set PY_VER=%%v
 echo        Found Python %PY_VER%
@@ -23,8 +22,7 @@ echo [1/5] Checking Node.js...
 where node >nul 2>&1
 if errorlevel 1 (
     echo [ERROR] Node.js not found. Install from https://nodejs.org
-    pause
-    exit /b 1
+    pause & exit /b 1
 )
 for /f "tokens=1" %%v in ('node --version 2^>^&1') do set NODE_VER=%%v
 echo        Found Node.js %NODE_VER%
@@ -34,27 +32,57 @@ echo [2/5] Checking virtual environment...
 if not exist "%~dp0venv311\Scripts\python.exe" (
     echo        Creating venv311...
     python -m venv "%~dp0venv311"
-    if errorlevel 1 (
-        echo [ERROR] Failed to create virtual environment.
-        pause
-        exit /b 1
-    )
+    if errorlevel 1 ( echo [ERROR] Failed to create venv. & pause & exit /b 1 )
     echo        venv311 created.
 ) else (
     echo        venv311 already exists.
 )
 
 set VENV_PY=%~dp0venv311\Scripts\python.exe
-set VENV_PIP=%~dp0venv311\Scripts\pip.exe
 
 :: ── Step 3: Install Python dependencies ──────────────────────────────────────
 echo [3/5] Checking Python dependencies...
 
-:: Use a sentinel file to skip reinstall if requirements.txt hasn't changed
+:: Clean up any corrupted partial installs (e.g. ~orch, ~ympy left by interrupted pip)
+for /d %%D in ("%~dp0venv311\Lib\site-packages\~*") do (
+    echo        Removing corrupted package: %%~nxD
+    rmdir /s /q "%%D" >nul 2>&1
+)
+
+:: Determine GPU presence once
+set HAS_GPU=0
+nvidia-smi >nul 2>&1
+if not errorlevel 1 set HAS_GPU=1
+
+:: ── 3a: Install / verify torch (CUDA or CPU) ─────────────────────────────────
+set TORCH_OK=0
+"%VENV_PY%" -c "import torch; exit(0 if torch.cuda.is_available() else 1)" >nul 2>&1
+if not errorlevel 1 set TORCH_OK=1
+
+if "%HAS_GPU%"=="1" (
+    if "%TORCH_OK%"=="0" (
+        echo        Installing CUDA-enabled PyTorch ^(cu124^)...
+        "%VENV_PY%" -m pip install torch torchvision ^
+            --index-url https://download.pytorch.org/whl/cu124 -q
+        if errorlevel 1 ( echo [ERROR] Failed to install CUDA PyTorch. & pause & exit /b 1 )
+        echo        CUDA PyTorch installed.
+    ) else (
+        echo        PyTorch with CUDA already installed.
+    )
+) else (
+    :: No GPU — install CPU torch if not present at all
+    "%VENV_PY%" -c "import torch" >nul 2>&1
+    if errorlevel 1 (
+        echo        No GPU detected — installing CPU PyTorch...
+        "%VENV_PY%" -m pip install torch torchvision -q
+    ) else (
+        echo        PyTorch ^(CPU mode^) already installed.
+    )
+)
+
+:: ── 3b: Install remaining requirements ───────────────────────────────────────
 set SENTINEL=%~dp0venv311\.installed_hash
 set REQ_FILE=%~dp0requirements.txt
-
-:: Compute a simple hash (file size + last-modified) as a cheap change check
 for %%F in ("%REQ_FILE%") do set REQ_SIG=%%~zF-%%~tF
 
 set NEED_INSTALL=1
@@ -64,61 +92,32 @@ if exist "%SENTINEL%" (
 )
 
 if "!NEED_INSTALL!"=="1" (
-    echo        Installing / updating packages from requirements.txt...
+    echo        Installing packages from requirements.txt...
     "%VENV_PY%" -m pip install --upgrade pip -q
     "%VENV_PY%" -m pip install -r "%REQ_FILE%" -q
-    if errorlevel 1 (
-        echo [ERROR] pip install failed. Check your internet connection.
-        pause
-        exit /b 1
-    )
-
-    :: NVIDIA GPU check — install CUDA-enabled PyTorch and GPU extras
-    nvidia-smi >nul 2>&1
-    if not errorlevel 1 (
-        echo        NVIDIA GPU detected — checking PyTorch CUDA support...
-        "%VENV_PY%" -c "import torch; exit(0 if torch.cuda.is_available() else 1)" >nul 2>&1
-        if errorlevel 1 (
-            echo        PyTorch has no CUDA support — reinstalling CUDA version...
-            "%VENV_PY%" -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124 --force-reinstall -q
-        ) else (
-            echo        PyTorch CUDA OK.
-        )
-        echo        Installing GPU extras ^(xformers^)...
-        "%VENV_PY%" -m pip install -r "%~dp0requirements-gpu.txt" -q
-    ) else (
-        echo        No NVIDIA GPU detected — running in CPU mode.
-    )
-
+    if errorlevel 1 ( echo [ERROR] pip install failed. & pause & exit /b 1 )
     echo %REQ_SIG%> "%SENTINEL%"
-    echo        Dependencies installed.
+    echo        Packages installed.
 ) else (
-    echo        Dependencies up to date.
-    :: Even when deps are cached, verify CUDA PyTorch is installed
-    nvidia-smi >nul 2>&1
-    if not errorlevel 1 (
-        "%VENV_PY%" -c "import torch; exit(0 if torch.cuda.is_available() else 1)" >nul 2>&1
-        if errorlevel 1 (
-            echo        WARNING: PyTorch has no CUDA support — reinstalling CUDA version...
-            "%VENV_PY%" -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124 --force-reinstall -q
-            echo        CUDA PyTorch reinstalled. Clearing sentinel to force full check next run.
-            del "%SENTINEL%" >nul 2>&1
-        )
+    echo        Packages up to date.
+)
+
+:: ── 3c: GPU extras (xformers) ────────────────────────────────────────────────
+if "%HAS_GPU%"=="1" (
+    "%VENV_PY%" -c "import xformers" >nul 2>&1
+    if errorlevel 1 (
+        echo        Installing xformers...
+        "%VENV_PY%" -m pip install -r "%~dp0requirements-gpu.txt" -q
     )
 )
 
 :: ── Step 4: Install frontend dependencies ────────────────────────────────────
 echo [4/5] Checking frontend dependencies...
 if not exist "%~dp0frontend\node_modules\.package-lock.json" (
-    echo        Running npm install in frontend\...
+    echo        Running npm install...
     pushd "%~dp0frontend"
     call npm install --prefer-offline --loglevel error
-    if errorlevel 1 (
-        echo [ERROR] npm install failed.
-        popd
-        pause
-        exit /b 1
-    )
+    if errorlevel 1 ( echo [ERROR] npm install failed. & popd & pause & exit /b 1 )
     popd
     echo        Frontend dependencies installed.
 ) else (
