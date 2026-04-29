@@ -1,5 +1,5 @@
 """
-Test router: experimental model inference (txt2img + inpainting).
+Test router: experimental model inference (txt2img + inpainting + img2img).
 Model identities are opaque — only slot IDs (test_model_1 …) are exposed publicly.
 """
 import io
@@ -11,7 +11,7 @@ from fastapi import APIRouter, UploadFile, File, Form
 from PIL import Image, ImageFilter
 
 from ..core.pipeline import (
-    get_test_pipe, get_test_inpaint_pipe, unload_test_pipe,
+    get_test_pipe, get_test_inpaint_pipe, get_test_img2img_pipe, unload_test_pipe,
     hard_clear_vram, cv2, _aggressive_vram_cleanup,
 )
 from ..core.vram import get_vram_info
@@ -308,3 +308,122 @@ async def test_edit_image(
 def test_unload():
     """Free VRAM occupied by active test pipelines."""
     return unload_test_pipe()
+
+
+# ─── Img2Img (maskless) ───────────────────────────────────────────────────────
+
+def _run_test_img2img(model_id, pil_image, prompt, negative,
+                      steps, strength, guidance, seed, auto_enrich):
+    clear_cancel()
+    set_progress("test", "loading_model", f"Loading {model_id} (img2img)...")
+
+    p = get_test_img2img_pipe(model_id)
+    if p is None:
+        set_progress("test", "error", f"Failed to load {model_id}")
+        return {"error": f"Failed to load {model_id}.", "status": "error"}
+
+    check_cancel("test")
+    set_progress("test", "preprocessing", "Encoding prompts...")
+
+    if auto_enrich:
+        enriched_pos = enrich_positive(prompt)
+        enriched_neg = enrich_negative(negative)
+    else:
+        enriched_pos = prompt or ""
+        enriched_neg = negative or ""
+
+    s = seed if seed >= 0 else int(torch.randint(0, 2**32 - 1, (1,)).item())
+    gen = torch.Generator(device="cpu").manual_seed(s)
+
+    # img2img actual steps = int(steps * strength)
+    actual_steps = max(1, int(steps * strength))
+
+    pos_emb, neg_emb, pos_pool, neg_pool = p.encode_prompt(
+        prompt=enriched_pos,
+        negative_prompt=enriched_neg,
+        device=p._execution_device,
+    )
+
+    check_cancel("test")
+    set_progress("test", "running", f"Generating (0/{actual_steps})", 0, actual_steps)
+    callback = make_step_callback("test", actual_steps)
+
+    t0 = time.time()
+    try:
+        with torch.inference_mode():
+            result_image = p(
+                prompt_embeds=pos_emb,
+                negative_prompt_embeds=neg_emb,
+                pooled_prompt_embeds=pos_pool,
+                negative_pooled_prompt_embeds=neg_pool,
+                image=pil_image,
+                strength=strength,
+                num_inference_steps=steps,
+                guidance_scale=guidance,
+                generator=gen,
+                callback_on_step_end=callback,
+            ).images[0]
+    except Exception as e:
+        if "cancel" in str(e).lower() or "CANCELLED" in str(e):
+            set_progress("test", "cancelled", "Cancelled")
+            return {"status": "cancelled"}
+        set_progress("test", "error", str(e))
+        return {"error": str(e), "status": "error"}
+
+    elapsed = round(time.time() - t0, 2)
+    set_progress("test", "done", f"Done in {elapsed}s")
+    return {
+        "image": pil_to_base64(result_image),
+        "seed": s,
+        "elapsed": elapsed,
+        "model_id": model_id,
+        "status": "ok",
+        "vram": get_vram_info(),
+    }
+
+
+@router.post("/test/img2img")
+async def test_img2img(
+    model_id: str = Form(...),
+    image: UploadFile = File(...),
+    prompt: str = Form(""),
+    negative: str = Form(""),
+    steps: int = Form(30),
+    strength: float = Form(0.6),
+    guidance: float = Form(7.0),
+    seed: int = Form(-1),
+    auto_enrich: bool = Form(True),
+    working_long_side: int = Form(1024),
+):
+    if model_id not in TEST_MODELS:
+        return {"error": f"Unknown model slot: {model_id}", "status": "error"}
+
+    _MAX_UPLOAD = 25 * 1024 * 1024
+    try:
+        img_bytes = await image.read()
+        if len(img_bytes) > _MAX_UPLOAD:
+            return {"error": "Image too large (max 25 MB).", "status": "error"}
+
+        pil_image = _bytes_to_pil(img_bytes)
+        del img_bytes
+        pil_image = _resize_to_long_side(pil_image, working_long_side)
+
+        reset_progress("test")
+        result = await asyncio.to_thread(
+            _run_test_img2img,
+            model_id, pil_image, prompt, negative,
+            steps, strength, guidance, seed, auto_enrich,
+        )
+        return result
+    except RuntimeError as e:
+        if "CANCELLED_BY_USER" in str(e):
+            return {"error": "Cancelled by user.", "status": "cancelled"}
+        set_progress("test", "error", str(e))
+        return {"error": str(e), "status": "error"}
+    except torch.cuda.OutOfMemoryError:
+        hard_clear_vram()
+        set_progress("test", "error", "Out of Memory")
+        return {"error": "Out of Memory. VRAM cleared.", "status": "oom"}
+    except Exception as e:
+        set_progress("test", "error", str(e))
+        return {"error": str(e), "status": "error"}

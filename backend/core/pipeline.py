@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 from diffusers import (
     StableDiffusionXLInpaintPipeline,
     StableDiffusionXLPipeline,
+    StableDiffusionXLImg2ImgPipeline,
     FluxPipeline,
 )
 
@@ -43,6 +44,8 @@ test_pipe = None
 test_pipe_model_id: str | None = None
 test_inpaint_pipe = None
 test_inpaint_pipe_model_id: str | None = None
+test_img2img_pipe = None
+test_img2img_pipe_model_id: str | None = None
 
 # Prevents concurrent model loads from double-initialising on simultaneous requests
 _model_lock = threading.Lock()
@@ -70,7 +73,9 @@ def unload_aux_pipelines():
 
 def hard_clear_vram():
     """Hard clear: unload all models from GPU."""
-    global pipe, PIPE, controlnet_pipes, txt2img_pipe, fill_pipe, kontext_pipe, test_pipe, test_pipe_model_id, test_inpaint_pipe, test_inpaint_pipe_model_id
+    global pipe, PIPE, controlnet_pipes, txt2img_pipe, fill_pipe, kontext_pipe
+    global test_pipe, test_pipe_model_id, test_inpaint_pipe, test_inpaint_pipe_model_id
+    global test_img2img_pipe, test_img2img_pipe_model_id
     pipe = None
     PIPE = None
     txt2img_pipe = None
@@ -80,6 +85,8 @@ def hard_clear_vram():
     test_pipe_model_id = None
     test_inpaint_pipe = None
     test_inpaint_pipe_model_id = None
+    test_img2img_pipe = None
+    test_img2img_pipe_model_id = None
     if isinstance(controlnet_pipes, dict):
         controlnet_pipes.clear()
     else:
@@ -459,6 +466,7 @@ def get_test_pipe(model_id: str):
     Unloads all other pipelines first — test models need the full 12GB budget.
     """
     global test_pipe, test_pipe_model_id, pipe, PIPE, txt2img_pipe, fill_pipe, kontext_pipe
+    global test_inpaint_pipe, test_inpaint_pipe_model_id, test_img2img_pipe, test_img2img_pipe_model_id
 
     if test_pipe is not None and test_pipe_model_id == model_id:
         return test_pipe
@@ -490,6 +498,9 @@ def get_test_pipe(model_id: str):
         if test_inpaint_pipe is not None:
             test_inpaint_pipe = None
             test_inpaint_pipe_model_id = None
+        if test_img2img_pipe is not None:
+            test_img2img_pipe = None
+            test_img2img_pipe_model_id = None
         _aggressive_vram_cleanup()
 
         t0 = time.time()
@@ -514,10 +525,13 @@ def get_test_pipe(model_id: str):
 def unload_test_pipe():
     """Unload all active test pipelines and free VRAM."""
     global test_pipe, test_pipe_model_id, test_inpaint_pipe, test_inpaint_pipe_model_id
+    global test_img2img_pipe, test_img2img_pipe_model_id
     test_pipe = None
     test_pipe_model_id = None
     test_inpaint_pipe = None
     test_inpaint_pipe_model_id = None
+    test_img2img_pipe = None
+    test_img2img_pipe_model_id = None
     _aggressive_vram_cleanup()
     return {"message": "[TEST] Test pipelines unloaded."}
 
@@ -527,6 +541,7 @@ def get_test_inpaint_pipe(model_id: str):
     Unloads all other pipelines first — same VRAM budget as get_test_pipe().
     """
     global test_pipe, test_pipe_model_id, test_inpaint_pipe, test_inpaint_pipe_model_id
+    global test_img2img_pipe, test_img2img_pipe_model_id
     global pipe, PIPE, txt2img_pipe, fill_pipe, kontext_pipe
 
     if test_inpaint_pipe is not None and test_inpaint_pipe_model_id == model_id:
@@ -577,4 +592,61 @@ def get_test_inpaint_pipe(model_id: str):
             logger.error(f"[TEST-INPAINT] Load failed for {model_id}: {e}")
             test_inpaint_pipe = None
             test_inpaint_pipe_model_id = None
+            return None
+
+
+def get_test_img2img_pipe(model_id: str):
+    """Load a test model as StableDiffusionXLImg2ImgPipeline for maskless image editing."""
+    global test_img2img_pipe, test_img2img_pipe_model_id
+    global test_pipe, test_pipe_model_id, test_inpaint_pipe, test_inpaint_pipe_model_id
+    global pipe, PIPE, txt2img_pipe, fill_pipe, kontext_pipe
+
+    if test_img2img_pipe is not None and test_img2img_pipe_model_id == model_id:
+        return test_img2img_pipe
+
+    model_path = TEST_MODELS.get(model_id)
+    if not model_path:
+        logger.error(f"[TEST-IMG2IMG] Unknown model slot: {model_id}")
+        return None
+    if not os.path.exists(model_path):
+        logger.error(f"[TEST-IMG2IMG] Model file not found: {model_path}")
+        return None
+
+    with _model_lock:
+        if test_img2img_pipe is not None and test_img2img_pipe_model_id == model_id:
+            return test_img2img_pipe
+
+        _unload_aux_models()
+        pipe = None
+        PIPE = None
+        txt2img_pipe = None
+        fill_pipe = None
+        kontext_pipe = None
+        if test_pipe is not None:
+            test_pipe = None
+            test_pipe_model_id = None
+        if test_inpaint_pipe is not None:
+            test_inpaint_pipe = None
+            test_inpaint_pipe_model_id = None
+        if test_img2img_pipe is not None:
+            test_img2img_pipe = None
+            test_img2img_pipe_model_id = None
+        _aggressive_vram_cleanup()
+
+        t0 = time.time()
+        logger.info(f"[TEST-IMG2IMG] Loading {model_id} from {model_path}")
+        dtype = torch.float16 if DEVICE == "cuda" else torch.float32
+        try:
+            p = StableDiffusionXLImg2ImgPipeline.from_single_file(
+                model_path, torch_dtype=dtype, use_safetensors=True, safety_checker=None,
+            )
+            p = _apply_optimizations(p, f"TEST-IMG2IMG/{model_id}")
+            test_img2img_pipe = p
+            test_img2img_pipe_model_id = model_id
+            logger.info(f"[TEST-IMG2IMG] {model_id} ready in {time.time()-t0:.1f}s")
+            return test_img2img_pipe
+        except Exception as e:
+            logger.error(f"[TEST-IMG2IMG] Load failed for {model_id}: {e}")
+            test_img2img_pipe = None
+            test_img2img_pipe_model_id = None
             return None

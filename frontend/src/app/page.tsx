@@ -12,6 +12,7 @@ import {
   cancelInference,
   getTestModels,
   testGenerate,
+  testImg2Img,
   testEdit,
   unloadTestModel,
   type GenerateResponse,
@@ -709,7 +710,7 @@ function Slider({ label, value, min, max, step, onChange }: { label: string; val
 function TestPage() {
   const [models, setModels] = useState<string[]>([]);
   const [selectedModel, setSelectedModel] = useState("");
-  const [testMode, setTestMode] = useState<"generate" | "edit">("generate");
+  const [testMode, setTestMode] = useState<"generate" | "edit" | "img2img">("generate");
   const [loading, setLoading] = useState(false);
   const [status, setStatus] = useState("");
   const [progress, setProgress] = useState<ProgressInfo | null>(null);
@@ -747,6 +748,19 @@ function TestPage() {
   const [editSeed, setEditSeed] = useState(-1);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // Img2Img state
+  const [i2iImage, setI2iImage] = useState<string | null>(null);
+  const [i2iResult, setI2iResult] = useState<string | null>(null);
+  const [i2iPrompt, setI2iPrompt] = useState("");
+  const [i2iNeg, setI2iNeg] = useState("");
+  const [i2iStrength, setI2iStrength] = useState(0.6);
+  const [i2iSteps, setI2iSteps] = useState(30);
+  const [i2iGuidance, setI2iGuidance] = useState(7);
+  const [i2iLongSide, setI2iLongSide] = useState(1024);
+  const [i2iAutoEnrich, setI2iAutoEnrich] = useState(true);
+  const [i2iSeed, setI2iSeed] = useState(-1);
+  const i2iFileRef = useRef<HTMLInputElement>(null);
+
   useEffect(() => {
     getTestModels()
       .then((r) => { setModels(r.models); if (r.models.length > 0) setSelectedModel(r.models[0]); })
@@ -766,6 +780,30 @@ function TestPage() {
   const handleUnload = async () => {
     await unloadTestModel().catch(() => {});
     setStatus("Model unloaded from VRAM.");
+  };
+
+  // ── Img2Img ──
+  const handleImg2Img = async () => {
+    if (!i2iImage || !selectedModel) return;
+    setLoading(true); setI2iResult(null); setStatus(""); setProgress(null);
+    try {
+      const blob = await fetch(i2iImage).then((r) => r.blob());
+      const fd = new FormData();
+      fd.append("model_id", selectedModel);
+      fd.append("image", blob, "image.jpg");
+      fd.append("prompt", i2iPrompt);
+      fd.append("negative", i2iNeg);
+      fd.append("steps", String(i2iSteps));
+      fd.append("strength", String(i2iStrength));
+      fd.append("guidance", String(i2iGuidance));
+      fd.append("seed", String(i2iSeed));
+      fd.append("auto_enrich", String(i2iAutoEnrich));
+      fd.append("working_long_side", String(i2iLongSide));
+      const res = await testImg2Img(fd);
+      if (res.image) setI2iResult(res.image);
+      setStatus(res.status === "ok" ? `Done in ${res.elapsed}s · seed ${res.seed}` : res.error || "Unknown error");
+    } catch (e: unknown) { setStatus(e instanceof Error ? e.message : "Request failed"); }
+    finally { setLoading(false); setProgress(null); }
   };
 
   // ── Generate ──
@@ -884,11 +922,12 @@ function TestPage() {
         </div>
         <div style={{ display: "flex", gap: 6, background: "var(--bg-tertiary)", borderRadius: 10, padding: 4, border: "1px solid var(--border)" }}>
           <button className={testMode === "generate" ? "btn-primary" : "btn-secondary"} style={{ padding: "5px 14px", fontSize: "0.8rem" }} onClick={() => setTestMode("generate")}>🎨 Generate</button>
+          <button className={testMode === "img2img" ? "btn-primary" : "btn-secondary"} style={{ padding: "5px 14px", fontSize: "0.8rem" }} onClick={() => setTestMode("img2img")}>🔄 Img2Img</button>
           <button className={testMode === "edit" ? "btn-primary" : "btn-secondary"} style={{ padding: "5px 14px", fontSize: "0.8rem" }} onClick={() => setTestMode("edit")}>✏️ Edit</button>
         </div>
       </div>
       <p style={{ color: "var(--text-secondary)", marginBottom: 20, fontSize: "0.9rem" }}>
-        {testMode === "generate" ? "Text-to-image · experimental models" : "Image upload + mask · AI inpainting · experimental models"}
+        {testMode === "generate" ? "Text-to-image · experimental models" : testMode === "img2img" ? "Image-to-image · no mask needed · strength controls how much to change" : "Image upload + mask · AI inpainting · experimental models"}
       </p>
 
       {/* Model selector (shared) */}
@@ -943,6 +982,95 @@ function TestPage() {
             </div>
             {genResult?.image && (
               <a href={`data:image/jpeg;base64,${genResult.image}`} download={`test_gen_${genResult.seed}.jpg`} className="btn-secondary" style={{ textAlign: "center", textDecoration: "none", padding: "8px 16px", fontSize: "0.85rem" }}>⬇️ Download</a>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ── Img2Img mode ── */}
+      {testMode === "img2img" && (
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 24 }}>
+          {/* Left: controls */}
+          <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+            {/* Source image */}
+            <div className="glass-card" style={{ padding: 16 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+                <h3 style={{ fontSize: "0.85rem", fontWeight: 600 }}>📤 Source Image</h3>
+                {i2iImage && <button style={{ background: "none", border: "none", color: "var(--text-muted)", fontSize: "0.8rem", cursor: "pointer" }} onClick={() => { setI2iImage(null); setI2iResult(null); }}>✕ Clear</button>}
+              </div>
+              <div className="image-display" style={{ minHeight: 200, cursor: i2iImage ? "default" : "pointer" }} onClick={() => !i2iImage && i2iFileRef.current?.click()}>
+                {i2iImage ? (
+                  <img src={i2iImage} alt="Source" style={{ width: "100%", height: "100%", objectFit: "contain" }} />
+                ) : (
+                  <label style={{ cursor: "pointer", color: "var(--text-muted)", textAlign: "center", padding: 24, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100%" }}>
+                    <div style={{ fontSize: "2rem", marginBottom: 8, opacity: 0.3 }}>📤</div>
+                    <div style={{ fontSize: "0.85rem" }}>Click to upload</div>
+                  </label>
+                )}
+                <input ref={i2iFileRef} type="file" accept="image/*" style={{ display: "none" }} onChange={(e) => {
+                  const f = e.target.files?.[0]; if (!f) return;
+                  const r = new FileReader(); r.onload = (ev) => setI2iImage(ev.target?.result as string); r.readAsDataURL(f);
+                }} />
+              </div>
+            </div>
+            {/* Prompt */}
+            <div className="glass-card" style={{ padding: 16 }}>
+              <h3 style={{ fontSize: "0.85rem", fontWeight: 600, marginBottom: 10 }}>💬 Prompt</h3>
+              <textarea className="input-field" rows={2} placeholder="Describe the target style or changes..." value={i2iPrompt} onChange={(e) => setI2iPrompt(e.target.value)} style={{ fontSize: "0.85rem" }} />
+              <textarea className="input-field" rows={1} placeholder="Negative (optional)" value={i2iNeg} onChange={(e) => setI2iNeg(e.target.value)} style={{ marginTop: 6, fontSize: "0.78rem" }} />
+              <label style={{ display: "flex", alignItems: "center", gap: 5, fontSize: "0.8rem", color: "var(--text-secondary)", cursor: "pointer", marginTop: 8 }}>
+                <input type="checkbox" checked={i2iAutoEnrich} onChange={(e) => setI2iAutoEnrich(e.target.checked)} /> Auto negative prompt
+              </label>
+            </div>
+            {/* Settings */}
+            <div className="glass-card" style={{ padding: 16 }}>
+              <h3 style={{ fontSize: "0.85rem", fontWeight: 600, marginBottom: 10 }}>⚙️ Settings</h3>
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                <Slider label="Strength" value={i2iStrength} min={0.1} max={0.99} step={0.05} onChange={setI2iStrength} />
+                <div style={{ fontSize: "0.72rem", color: "var(--text-muted)", marginTop: -4 }}>
+                  {i2iStrength <= 0.3 ? "Subtle style/lighting tweaks" : i2iStrength <= 0.6 ? "Balanced — keeps structure" : i2iStrength <= 0.85 ? "Strong restyle" : "Near full regeneration"}
+                </div>
+                <Slider label="Steps" value={i2iSteps} min={10} max={60} step={1} onChange={setI2iSteps} />
+                <Slider label="Guidance" value={i2iGuidance} min={1} max={15} step={0.5} onChange={setI2iGuidance} />
+                <Slider label="Resolution" value={i2iLongSide} min={512} max={1536} step={64} onChange={setI2iLongSide} />
+                <div>
+                  <label style={{ fontSize: "0.78rem", color: "var(--text-secondary)", marginBottom: 3, display: "block" }}>Seed</label>
+                  <input type="number" className="input-field" placeholder="-1 = random" value={i2iSeed} onChange={(e) => setI2iSeed(Number(e.target.value))} style={{ padding: "5px 8px", fontSize: "0.82rem" }} />
+                </div>
+              </div>
+            </div>
+            <ProgressSection />
+            {status && !loading && (
+              <div className={`status-pill ${i2iResult ? "success" : status.startsWith("Cancelled") ? "" : "error"}`}>{status}</div>
+            )}
+            <button className="btn-primary" onClick={handleImg2Img} disabled={loading || !i2iImage} style={{ padding: "14px 0", fontSize: "0.95rem" }}>
+              {loading ? <><span className="spinner" /> Processing...</> : "▶️ Run Img2Img"}
+            </button>
+          </div>
+          {/* Right: result */}
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            <span style={{ fontSize: "0.85rem", fontWeight: 600, color: "var(--text-secondary)" }}>Result</span>
+            <div className={`image-display ${loading ? "loading" : ""}`} style={{ minHeight: 480 }}>
+              {i2iResult ? (
+                <img src={`data:image/jpeg;base64,${i2iResult}`} alt="Result" className="scale-pop" style={{ width: "100%", height: "100%", objectFit: "contain" }} />
+              ) : (
+                <div style={{ color: "var(--text-muted)", textAlign: "center", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100%" }}>
+                  <div style={{ fontSize: "3rem", marginBottom: 12, opacity: 0.3 }}>🔄</div>
+                  <div>Result will appear here</div>
+                </div>
+              )}
+            </div>
+            {i2iResult && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                <button className="btn-secondary" style={{ width: "100%", fontSize: "0.85rem" }}
+                  onClick={() => { setI2iImage(`data:image/jpeg;base64,${i2iResult}`); setI2iResult(null); setStatus(""); }}>
+                  🔄 Use Result as Source
+                </button>
+                <a href={`data:image/jpeg;base64,${i2iResult}`} download={`test_i2i_${i2iSeed}.jpg`} className="btn-secondary"
+                  style={{ width: "100%", fontSize: "0.85rem", textAlign: "center", textDecoration: "none", display: "block", padding: "8px 16px" }}>
+                  ⬇️ Download Result
+                </a>
+              </div>
             )}
           </div>
         </div>

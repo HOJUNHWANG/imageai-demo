@@ -201,6 +201,14 @@ export async function testGenerate(req: TestGenerateRequest): Promise<TestGenera
     return (await checkResponse(res)).json();
 }
 
+export async function testImg2Img(formData: FormData): Promise<TestGenerateResponse> {
+    const res = await fetch(`${API_BASE}/test/img2img`, {
+        method: "POST",
+        body: formData,
+    });
+    return (await checkResponse(res)).json();
+}
+
 export async function testEdit(formData: FormData): Promise<TestGenerateResponse> {
     const res = await fetch(`${API_BASE}/test/edit`, {
         method: "POST",
