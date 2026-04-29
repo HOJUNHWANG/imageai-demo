@@ -20,7 +20,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from .routers import generate, edit, mask, system, kontext
+from .routers import generate, edit, mask, system, kontext, test_generate
 
 
 @asynccontextmanager
@@ -54,3 +54,4 @@ app.include_router(edit.router, prefix="/api", tags=["edit"])
 app.include_router(kontext.router, prefix="/api", tags=["kontext"])
 app.include_router(mask.router, prefix="/api", tags=["mask"])
 app.include_router(system.router, prefix="/api", tags=["system"])
+app.include_router(test_generate.router, prefix="/api", tags=["test"])

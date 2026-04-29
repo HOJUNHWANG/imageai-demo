@@ -110,7 +110,7 @@ if "!NEED_INSTALL!"=="1" (
 )
 
 :: ── Step 4: Install frontend dependencies ────────────────────────────────────
-echo [4/5] Checking frontend dependencies...
+echo [4/6] Checking frontend dependencies...
 if not exist "%~dp0frontend\node_modules\.package-lock.json" (
     echo        Running npm install...
     pushd "%~dp0frontend"
@@ -122,8 +122,19 @@ if not exist "%~dp0frontend\node_modules\.package-lock.json" (
     echo        node_modules already present.
 )
 
-:: ── Step 5: Clean up old processes and start ─────────────────────────────────
-echo [5/5] Starting servers...
+:: ── Step 5: Load .env.local (test model paths, never committed) ──────────────
+if exist "%~dp0.env.local" (
+    echo [ENV]  Loading .env.local...
+    for /f "usebackq tokens=1,* delims==" %%A in ("%~dp0.env.local") do (
+        set "line=%%A"
+        if not "!line:~0,1!"=="#" if not "%%A"=="" (
+            set "%%A=%%B"
+        )
+    )
+)
+
+:: ── Step 6: Clean up old processes and start ─────────────────────────────────
+echo [6/6] Starting servers...
 
 for /f "tokens=5" %%a in ('netstat -aon 2^>nul ^| findstr ":8000 " ^| findstr "LISTENING"') do taskkill /F /PID %%a >nul 2>&1
 for /f "tokens=5" %%a in ('netstat -aon 2^>nul ^| findstr ":3000 " ^| findstr "LISTENING"') do taskkill /F /PID %%a >nul 2>&1

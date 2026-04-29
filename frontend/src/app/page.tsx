@@ -10,15 +10,20 @@ import {
   getProgress,
   getVram,
   cancelInference,
+  getTestModels,
+  testGenerate,
+  unloadTestModel,
   type GenerateResponse,
   type EditResponse,
   type KontextResponse,
   type ProgressInfo,
   type VramInfo,
+  type TestGenerateRequest,
+  type TestGenerateResponse,
 } from "@/lib/api";
 
 export default function Home() {
-  const [activeTab, setActiveTab] = useState<"welcome" | "generate" | "edit">("welcome");
+  const [activeTab, setActiveTab] = useState<"welcome" | "generate" | "edit" | "test">("welcome");
   const [sentImage, setSentImage] = useState<string | null>(null);
   const [vram, setVram] = useState<VramInfo | null>(null);
   const [backendOnline, setBackendOnline] = useState<boolean | null>(null);
@@ -47,6 +52,8 @@ export default function Home() {
         <SidebarBtn icon="🏠" label="Home" active={activeTab === "welcome"} onClick={() => setActiveTab("welcome")} />
         <SidebarBtn icon="🎨" label="Generate" active={activeTab === "generate"} onClick={() => setActiveTab("generate")} />
         <SidebarBtn icon="✏️" label="Edit" active={activeTab === "edit"} onClick={() => setActiveTab("edit")} />
+        <div style={{ height: 1, background: "var(--border)", margin: "4px 0" }} />
+        <SidebarBtn icon="🧪" label="Test" active={activeTab === "test"} onClick={() => setActiveTab("test")} />
         <div style={{ flex: 1 }} />
         {vram && vram.gpu_name !== "(CPU mode)" && (
           <div style={{ background: "var(--bg-tertiary)", borderRadius: 10, padding: "10px 12px", border: "1px solid var(--border)", fontSize: "0.75rem", marginBottom: 8 }}>
@@ -71,6 +78,7 @@ export default function Home() {
         <div style={{ display: activeTab === "welcome" ? "block" : "none" }}><WelcomePage onNavigate={setActiveTab} /></div>
         <div style={{ display: activeTab === "generate" ? "block" : "none" }}><GeneratePage onSendToEditor={handleSendToEditor} /></div>
         <div style={{ display: activeTab === "edit" ? "block" : "none" }}><EditPage sentImage={sentImage} onClearSent={handleClearSent} /></div>
+        <div style={{ display: activeTab === "test" ? "block" : "none" }}><TestPage /></div>
       </main>
     </div>
   );
@@ -688,6 +696,240 @@ function Slider({ label, value, min, max, step, onChange }: { label: string; val
         onChange={(e) => onChange(Number(e.target.value))}
         style={{ width: "100%", background: `linear-gradient(90deg, var(--accent) ${pct}%, var(--bg-tertiary) ${pct}%)` }}
       />
+    </div>
+  );
+}
+
+// ─── TestPage ─────────────────────────────────────────────────────────────────
+
+function TestPage() {
+  const [models, setModels] = useState<string[]>([]);
+  const [selectedModel, setSelectedModel] = useState("");
+  const [prompt, setPrompt] = useState("");
+  const [negPrompt, setNegPrompt] = useState("");
+  const [width, setWidth] = useState(1024);
+  const [height, setHeight] = useState(1024);
+  const [steps, setSteps] = useState(20);
+  const [guidance, setGuidance] = useState(7);
+  const [seed, setSeed] = useState(-1);
+  const [loading, setLoading] = useState(false);
+  const [result, setResult] = useState<TestGenerateResponse | null>(null);
+  const [status, setStatus] = useState("");
+  const [progress, setProgress] = useState<ProgressInfo | null>(null);
+
+  useEffect(() => {
+    getTestModels()
+      .then((r) => {
+        setModels(r.models);
+        if (r.models.length > 0) setSelectedModel(r.models[0]);
+      })
+      .catch(() => setStatus("Backend offline or no test models configured."));
+  }, []);
+
+  useEffect(() => {
+    if (!loading) return;
+    const id = setInterval(() => {
+      getProgress()
+        .then(setProgress)
+        .catch(() => {});
+    }, 800);
+    return () => clearInterval(id);
+  }, [loading]);
+
+  const handleGenerate = async () => {
+    if (!selectedModel || !prompt.trim()) return;
+    setLoading(true);
+    setResult(null);
+    setStatus("");
+    setProgress(null);
+    try {
+      const req: TestGenerateRequest = {
+        model_id: selectedModel,
+        prompt: prompt.trim(),
+        negative_prompt: negPrompt.trim() || undefined,
+        width,
+        height,
+        steps,
+        guidance,
+        seed,
+      };
+      const res = await testGenerate(req);
+      setResult(res);
+      if (res.status === "ok") {
+        setStatus(`Done in ${res.elapsed}s · seed ${res.seed}`);
+      } else {
+        setStatus(res.error || "Unknown error");
+      }
+    } catch (e: unknown) {
+      setStatus(e instanceof Error ? e.message : "Request failed");
+    } finally {
+      setLoading(false);
+      setProgress(null);
+    }
+  };
+
+  const handleCancel = async () => {
+    await cancelInference().catch(() => {});
+  };
+
+  const handleUnload = async () => {
+    await unloadTestModel().catch(() => {});
+    setStatus("Model unloaded from VRAM.");
+  };
+
+  const progressPct = progress && progress.total > 0
+    ? Math.round((progress.step / progress.total) * 100)
+    : 0;
+
+  return (
+    <div className="fade-in">
+      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 4 }}>
+        <h1 style={{ fontSize: "1.5rem", fontWeight: 700 }}>🧪 Test</h1>
+        <span style={{ fontSize: "0.72rem", color: "var(--text-muted)", background: "var(--bg-tertiary)", padding: "2px 8px", borderRadius: 6, border: "1px solid var(--border)" }}>
+          local only
+        </span>
+      </div>
+      <p style={{ color: "var(--text-secondary)", marginBottom: 24, fontSize: "0.9rem" }}>
+        Experimental model inference · results not saved
+      </p>
+
+      {models.length === 0 ? (
+        <div style={{ background: "var(--bg-secondary)", border: "1px dashed var(--border)", borderRadius: 12, padding: 32, textAlign: "center", color: "var(--text-muted)" }}>
+          <div style={{ fontSize: "2rem", marginBottom: 12 }}>🔧</div>
+          <div style={{ fontWeight: 600, marginBottom: 6 }}>No test models configured</div>
+          <div style={{ fontSize: "0.82rem" }}>Set TEST_MODEL_1 … TEST_MODEL_4 in .env.local and restart the backend.</div>
+        </div>
+      ) : (
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 24 }}>
+          {/* Left: Controls */}
+          <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+            <div className="glass-card" style={{ padding: 16 }}>
+              <h3 style={{ fontSize: "0.85rem", fontWeight: 600, marginBottom: 10 }}>🔬 Model</h3>
+              <select
+                className="input-field"
+                value={selectedModel}
+                onChange={(e) => setSelectedModel(e.target.value)}
+                style={{ width: "100%", padding: "8px 10px", fontSize: "0.85rem" }}
+              >
+                {models.map((m) => (
+                  <option key={m} value={m}>{m}</option>
+                ))}
+              </select>
+              <button
+                className="btn-secondary"
+                style={{ marginTop: 8, width: "100%", fontSize: "0.78rem" }}
+                onClick={handleUnload}
+                disabled={loading}
+              >
+                Unload from VRAM
+              </button>
+            </div>
+
+            <div className="glass-card" style={{ padding: 16 }}>
+              <h3 style={{ fontSize: "0.85rem", fontWeight: 600, marginBottom: 10 }}>💬 Prompt</h3>
+              <textarea
+                className="input-field"
+                rows={3}
+                placeholder="Describe the image..."
+                value={prompt}
+                onChange={(e) => setPrompt(e.target.value)}
+                style={{ fontSize: "0.85rem" }}
+              />
+              <textarea
+                className="input-field"
+                rows={1}
+                placeholder="Negative prompt (optional)"
+                value={negPrompt}
+                onChange={(e) => setNegPrompt(e.target.value)}
+                style={{ marginTop: 6, fontSize: "0.78rem" }}
+              />
+            </div>
+
+            <div className="glass-card" style={{ padding: 16 }}>
+              <h3 style={{ fontSize: "0.85rem", fontWeight: 600, marginBottom: 10 }}>⚙️ Settings</h3>
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                <Slider label="Width" value={width} min={512} max={1536} step={64} onChange={setWidth} />
+                <Slider label="Height" value={height} min={512} max={1536} step={64} onChange={setHeight} />
+                <Slider label="Steps" value={steps} min={10} max={60} step={1} onChange={setSteps} />
+                <Slider label="Guidance" value={guidance} min={1} max={15} step={0.5} onChange={setGuidance} />
+                <div>
+                  <label style={{ fontSize: "0.78rem", color: "var(--text-secondary)", marginBottom: 3, display: "block" }}>Seed</label>
+                  <input
+                    type="number"
+                    className="input-field"
+                    placeholder="-1 = random"
+                    value={seed}
+                    onChange={(e) => setSeed(Number(e.target.value))}
+                    style={{ padding: "5px 8px", fontSize: "0.82rem" }}
+                  />
+                </div>
+              </div>
+            </div>
+
+            <button
+              className="btn-primary"
+              onClick={handleGenerate}
+              disabled={loading || !prompt.trim()}
+              style={{ padding: "14px 0", fontSize: "0.95rem" }}
+            >
+              {loading ? <><span className="spinner" /> Generating...</> : "▶️ Generate"}
+            </button>
+
+            {loading && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", fontSize: "0.78rem", color: "var(--text-secondary)" }}>
+                  <span>{progress?.message || "Initializing..."}</span>
+                  <span>{progressPct}%</span>
+                </div>
+                <div style={{ background: "var(--bg-tertiary)", borderRadius: 4, height: 6, overflow: "hidden" }}>
+                  <div style={{ height: "100%", borderRadius: 4, width: `${progressPct}%`, background: "var(--accent-gradient)", transition: "width 0.4s ease" }} />
+                </div>
+                <button className="btn-secondary" style={{ fontSize: "0.78rem", padding: "5px" }} onClick={handleCancel}>
+                  ✕ Cancel
+                </button>
+              </div>
+            )}
+
+            {status && !loading && (
+              <div
+                className={`status-pill ${result?.status === "ok" ? "success" : result?.status === "cancelled" ? "" : "error"}`}
+              >
+                {status}
+              </div>
+            )}
+          </div>
+
+          {/* Right: Result */}
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            <span style={{ fontSize: "0.85rem", fontWeight: 600, color: "var(--text-secondary)" }}>Result</span>
+            <div className={`image-display ${loading ? "loading" : ""}`} style={{ minHeight: 480 }}>
+              {result?.image ? (
+                <img
+                  src={`data:image/jpeg;base64,${result.image}`}
+                  alt="Test result"
+                  className="scale-pop"
+                  style={{ width: "100%", height: "100%", objectFit: "contain" }}
+                />
+              ) : (
+                <div style={{ color: "var(--text-muted)", textAlign: "center", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100%" }}>
+                  <div style={{ fontSize: "3rem", marginBottom: 12, opacity: 0.3 }}>🧪</div>
+                  <div>Result will appear here</div>
+                </div>
+              )}
+            </div>
+            {result?.image && (
+              <a
+                href={`data:image/jpeg;base64,${result.image}`}
+                download={`test_${result.seed}.jpg`}
+                className="btn-secondary"
+                style={{ textAlign: "center", textDecoration: "none", padding: "8px 16px", fontSize: "0.85rem" }}
+              >
+                ⬇️ Download
+              </a>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -164,3 +164,44 @@ export async function clearAux() {
     const res = await fetch(`${API_BASE}/clear/aux`, { method: "POST" });
     return (await checkResponse(res)).json();
 }
+
+// ─── Test Models ───
+export interface TestGenerateRequest {
+    model_id: string;
+    prompt: string;
+    negative_prompt?: string;
+    width: number;
+    height: number;
+    steps: number;
+    guidance: number;
+    seed: number;
+}
+
+export interface TestGenerateResponse {
+    image?: string;
+    seed?: number;
+    elapsed?: number;
+    model_id?: string;
+    status: string;
+    error?: string;
+    vram?: VramInfo;
+}
+
+export async function getTestModels(): Promise<{ models: string[]; count: number }> {
+    const res = await fetch(`${API_BASE}/test/models`);
+    return (await checkResponse(res)).json();
+}
+
+export async function testGenerate(req: TestGenerateRequest): Promise<TestGenerateResponse> {
+    const res = await fetch(`${API_BASE}/test/generate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(req),
+    });
+    return (await checkResponse(res)).json();
+}
+
+export async function unloadTestModel(): Promise<{ message: string }> {
+    const res = await fetch(`${API_BASE}/test/unload`, { method: "POST" });
+    return (await checkResponse(res)).json();
+}

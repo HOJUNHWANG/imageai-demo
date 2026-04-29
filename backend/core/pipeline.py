@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 
 from diffusers import (
     StableDiffusionXLInpaintPipeline,
+    StableDiffusionXLPipeline,
     FluxPipeline,
 )
 
@@ -20,6 +21,7 @@ from .config import (
     DEVICE, JUGGERNAUT_INPAINT, DEFAULT_MODEL,
     CPU_OFFLOAD, COMPILE_UNET,
     FLUX_FILL_MODEL, FLUX_KONTEXT_MODEL,
+    TEST_MODELS,
 )
 
 try:
@@ -35,6 +37,10 @@ txt2img_pipe = None
 fill_pipe = None
 kontext_pipe = None
 CURRENT_MODE = "edit"
+
+# Test model state — one slot active at a time to stay within 12GB VRAM
+test_pipe = None
+test_pipe_model_id: str | None = None
 
 # Prevents concurrent model loads from double-initialising on simultaneous requests
 _model_lock = threading.Lock()
@@ -62,12 +68,14 @@ def unload_aux_pipelines():
 
 def hard_clear_vram():
     """Hard clear: unload all models from GPU."""
-    global pipe, PIPE, controlnet_pipes, txt2img_pipe, fill_pipe, kontext_pipe
+    global pipe, PIPE, controlnet_pipes, txt2img_pipe, fill_pipe, kontext_pipe, test_pipe, test_pipe_model_id
     pipe = None
     PIPE = None
     txt2img_pipe = None
     fill_pipe = None
     kontext_pipe = None
+    test_pipe = None
+    test_pipe_model_id = None
     if isinstance(controlnet_pipes, dict):
         controlnet_pipes.clear()
     else:
@@ -440,3 +448,66 @@ def switch_mode(target_mode: str) -> str:
         get_inpaint_pipe()
         CURRENT_MODE = "edit"
         return "Switched to Inpainting (SDXL)"
+
+
+def get_test_pipe(model_id: str):
+    """Load a test model by slot ID (test_model_1 … test_model_4).
+    Unloads all other pipelines first — test models need the full 12GB budget.
+    """
+    global test_pipe, test_pipe_model_id, pipe, PIPE, txt2img_pipe, fill_pipe, kontext_pipe
+
+    if test_pipe is not None and test_pipe_model_id == model_id:
+        return test_pipe
+
+    model_path = TEST_MODELS.get(model_id)
+    if not model_path:
+        logger.error(f"[TEST] Unknown model slot: {model_id}")
+        return None
+    if not os.path.exists(model_path):
+        logger.error(f"[TEST] Model file not found: {model_path}")
+        return None
+
+    with _model_lock:
+        if test_pipe is not None and test_pipe_model_id == model_id:
+            return test_pipe
+
+        _unload_aux_models()
+        if pipe is not None:
+            pipe = None; PIPE = None
+        if txt2img_pipe is not None:
+            txt2img_pipe = None
+        if fill_pipe is not None:
+            fill_pipe = None
+        if kontext_pipe is not None:
+            kontext_pipe = None
+        if test_pipe is not None:
+            test_pipe = None
+            test_pipe_model_id = None
+        _aggressive_vram_cleanup()
+
+        t0 = time.time()
+        logger.info(f"[TEST] Loading {model_id} from {model_path}")
+        dtype = torch.float16 if DEVICE == "cuda" else torch.float32
+        try:
+            p = StableDiffusionXLPipeline.from_single_file(
+                model_path, torch_dtype=dtype, use_safetensors=True,
+            )
+            p = _apply_optimizations(p, f"TEST/{model_id}")
+            test_pipe = p
+            test_pipe_model_id = model_id
+            logger.info(f"[TEST] {model_id} ready in {time.time()-t0:.1f}s")
+            return test_pipe
+        except Exception as e:
+            logger.error(f"[TEST] Load failed for {model_id}: {e}")
+            test_pipe = None
+            test_pipe_model_id = None
+            return None
+
+
+def unload_test_pipe():
+    """Unload the active test model and free VRAM."""
+    global test_pipe, test_pipe_model_id
+    test_pipe = None
+    test_pipe_model_id = None
+    _aggressive_vram_cleanup()
+    return {"message": "[TEST] Test pipeline unloaded."}

@@ -30,6 +30,16 @@ CONTROLNET_CANNY = "diffusers/controlnet-canny-sdxl-1.0"
 FLUX_FILL_MODEL = os.getenv("FLUX_FILL_MODEL", "black-forest-labs/FLUX.1-Fill-dev")
 FLUX_KONTEXT_MODEL = os.getenv("FLUX_KONTEXT_MODEL", "black-forest-labs/FLUX.1-Kontext-dev")
 
+# Test models — paths set via .env.local only, never committed to git.
+# Add up to 4 slots. Leave unset to hide from the UI.
+_TEST_SLOTS = ["TEST_MODEL_1", "TEST_MODEL_2", "TEST_MODEL_3", "TEST_MODEL_4"]
+TEST_MODELS: dict[str, str] = {
+    slot.lower(): os.getenv(slot, "")
+    for slot in _TEST_SLOTS
+    if os.getenv(slot, "")
+}
+TEST_MODELS_DIR = os.path.join(BASE_DIR, "models", "test")
+
 # torch.compile for SDXL UNet — 20-40% speedup after first run.
 # First load adds ~60-120s compilation time. Requires PyTorch 2.0+.
 COMPILE_UNET = os.getenv("COMPILE_UNET", "0") == "1"
