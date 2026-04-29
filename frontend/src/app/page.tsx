@@ -889,7 +889,7 @@ function TestPage() {
     finally { setLoading(false); setProgress(null); }
   };
 
-  const ProgressSection = () => loading ? (
+  const renderProgress = () => !loading ? null : (
     <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 12 }}>
       <div style={{ display: "flex", justifyContent: "space-between", fontSize: "0.78rem", color: "var(--text-secondary)" }}>
         <span>{progress?.message || "Initializing..."}</span><span>{progressPct}%</span>
@@ -899,7 +899,7 @@ function TestPage() {
       </div>
       <button className="btn-secondary" style={{ fontSize: "0.78rem", padding: "5px" }} onClick={handleCancel}>✕ Cancel</button>
     </div>
-  ) : null;
+  );
 
   if (models.length === 0) return (
     <div className="fade-in">
@@ -921,9 +921,9 @@ function TestPage() {
           <span style={{ fontSize: "0.72rem", color: "var(--text-muted)", background: "var(--bg-tertiary)", padding: "2px 8px", borderRadius: 6, border: "1px solid var(--border)" }}>local only</span>
         </div>
         <div style={{ display: "flex", gap: 6, background: "var(--bg-tertiary)", borderRadius: 10, padding: 4, border: "1px solid var(--border)" }}>
-          <button className={testMode === "generate" ? "btn-primary" : "btn-secondary"} style={{ padding: "5px 14px", fontSize: "0.8rem" }} onClick={() => setTestMode("generate")}>🎨 Generate</button>
-          <button className={testMode === "img2img" ? "btn-primary" : "btn-secondary"} style={{ padding: "5px 14px", fontSize: "0.8rem" }} onClick={() => setTestMode("img2img")}>🔄 Img2Img</button>
-          <button className={testMode === "edit" ? "btn-primary" : "btn-secondary"} style={{ padding: "5px 14px", fontSize: "0.8rem" }} onClick={() => setTestMode("edit")}>✏️ Edit</button>
+          <button className={testMode === "generate" ? "btn-primary" : "btn-secondary"} style={{ padding: "5px 14px", fontSize: "0.8rem" }} onClick={() => { setTestMode("generate"); setStatus(""); }}>🎨 Generate</button>
+          <button className={testMode === "img2img" ? "btn-primary" : "btn-secondary"} style={{ padding: "5px 14px", fontSize: "0.8rem" }} onClick={() => { setTestMode("img2img"); setStatus(""); }}>🔄 Img2Img</button>
+          <button className={testMode === "edit" ? "btn-primary" : "btn-secondary"} style={{ padding: "5px 14px", fontSize: "0.8rem" }} onClick={() => { setTestMode("edit"); setStatus(""); }}>✏️ Edit</button>
         </div>
       </div>
       <p style={{ color: "var(--text-secondary)", marginBottom: 20, fontSize: "0.9rem" }}>
@@ -960,7 +960,7 @@ function TestPage() {
                 </div>
               </div>
             </div>
-            <ProgressSection />
+            {renderProgress()}
             {status && !loading && (
               <div className={`status-pill ${genResult?.status === "ok" ? "success" : genResult?.status === "cancelled" ? "" : "error"}`}>{status}</div>
             )}
@@ -1039,7 +1039,7 @@ function TestPage() {
                 </div>
               </div>
             </div>
-            <ProgressSection />
+            {renderProgress()}
             {status && !loading && (
               <div className={`status-pill ${i2iResult ? "success" : status.startsWith("Cancelled") ? "" : "error"}`}>{status}</div>
             )}
@@ -1120,7 +1120,7 @@ function TestPage() {
             </div>
           </div>
 
-          <ProgressSection />
+          {renderProgress()}
           {status && !loading && (
             <div className={`status-pill ${editResult ? "success" : status.startsWith("Cancelled") ? "" : "error"}`} style={{ marginBottom: 16 }}>{status}</div>
           )}

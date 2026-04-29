@@ -16,7 +16,7 @@ from ..core.pipeline import (
 )
 from ..core.vram import get_vram_info
 from ..core.utils import pil_to_base64
-from ..core.config import DEVICE, TEST_MODELS
+from ..core.config import TEST_MODELS
 from .system import set_progress, reset_progress, make_step_callback, clear_cancel, check_cancel
 
 import sys, os
@@ -241,7 +241,7 @@ def list_test_models():
 async def test_generate(req: TestGenerateRequest):
     if req.model_id not in TEST_MODELS:
         return {"error": f"Unknown model slot: {req.model_id}", "status": "error"}
-    reset_progress("test")
+    reset_progress()
     result = await asyncio.to_thread(_run_test_generate, req)
     return result
 
@@ -282,7 +282,7 @@ async def test_edit_image(
         pil_image = _resize_to_long_side(pil_image, working_long_side)
         pil_mask = pil_mask.resize(pil_image.size, Image.NEAREST)
 
-        reset_progress("test")
+        reset_progress()
         result = await asyncio.to_thread(
             _run_test_edit,
             model_id, pil_image, pil_mask, prompt, negative,
@@ -408,7 +408,7 @@ async def test_img2img(
         del img_bytes
         pil_image = _resize_to_long_side(pil_image, working_long_side)
 
-        reset_progress("test")
+        reset_progress()
         result = await asyncio.to_thread(
             _run_test_img2img,
             model_id, pil_image, prompt, negative,
