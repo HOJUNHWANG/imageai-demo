@@ -12,6 +12,7 @@ import {
   cancelInference,
   getTestModels,
   testGenerate,
+  testEdit,
   unloadTestModel,
   type GenerateResponse,
   type EditResponse,
@@ -20,6 +21,8 @@ import {
   type VramInfo,
   type TestGenerateRequest,
   type TestGenerateResponse,
+  type ClickMaskResponse,
+  type MaskResponse,
 } from "@/lib/api";
 
 export default function Home() {
@@ -700,216 +703,237 @@ function Slider({ label, value, min, max, step, onChange }: { label: string; val
   );
 }
 
+
 // ─── TestPage ─────────────────────────────────────────────────────────────────
 
 function TestPage() {
   const [models, setModels] = useState<string[]>([]);
   const [selectedModel, setSelectedModel] = useState("");
+  const [testMode, setTestMode] = useState<"generate" | "edit">("generate");
+  const [loading, setLoading] = useState(false);
+  const [status, setStatus] = useState("");
+  const [progress, setProgress] = useState<ProgressInfo | null>(null);
+
+  // Generate state
   const [prompt, setPrompt] = useState("");
   const [negPrompt, setNegPrompt] = useState("");
   const [width, setWidth] = useState(1024);
   const [height, setHeight] = useState(1024);
-  const [steps, setSteps] = useState(20);
-  const [guidance, setGuidance] = useState(7);
-  const [seed, setSeed] = useState(-1);
-  const [loading, setLoading] = useState(false);
-  const [result, setResult] = useState<TestGenerateResponse | null>(null);
-  const [status, setStatus] = useState("");
-  const [progress, setProgress] = useState<ProgressInfo | null>(null);
+  const [genSteps, setGenSteps] = useState(20);
+  const [genGuidance, setGenGuidance] = useState(7);
+  const [genSeed, setGenSeed] = useState(-1);
+  const [genResult, setGenResult] = useState<TestGenerateResponse | null>(null);
+
+  // Edit state
+  const [workingImage, setWorkingImage] = useState<string | null>(null);
+  const [maskImage, setMaskImage] = useState<string | null>(null);
+  const [editResult, setEditResult] = useState<string | null>(null);
+  const [maskMode, setMaskMode] = useState<"auto" | "click">("auto");
+  const [maskTarget, setMaskTarget] = useState("person");
+  const [maskLoading, setMaskLoading] = useState(false);
+  const [samMasks, setSamMasks] = useState<string[]>([]);
+  const [samLabels, setSamLabels] = useState<string[]>([]);
+  const [samSelected, setSamSelected] = useState(0);
+  const [editPrompt, setEditPrompt] = useState("");
+  const [editNeg, setEditNeg] = useState("");
+  const [strength, setStrength] = useState(0.55);
+  const [editSteps, setEditSteps] = useState(28);
+  const [editGuidance, setEditGuidance] = useState(7);
+  const [workingLongSide, setWorkingLongSide] = useState(1024);
+  const [maskExpand, setMaskExpand] = useState(10);
+  const [maskBlur, setMaskBlur] = useState(18);
+  const [protectFace, setProtectFace] = useState(false);
+  const [autoEnrich, setAutoEnrich] = useState(true);
+  const [editSeed, setEditSeed] = useState(-1);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     getTestModels()
-      .then((r) => {
-        setModels(r.models);
-        if (r.models.length > 0) setSelectedModel(r.models[0]);
-      })
+      .then((r) => { setModels(r.models); if (r.models.length > 0) setSelectedModel(r.models[0]); })
       .catch(() => setStatus("Backend offline or no test models configured."));
   }, []);
 
   useEffect(() => {
     if (!loading) return;
-    const id = setInterval(() => {
-      getProgress()
-        .then(setProgress)
-        .catch(() => {});
-    }, 800);
+    const id = setInterval(() => { getProgress().then(setProgress).catch(() => {}); }, 800);
     return () => clearInterval(id);
   }, [loading]);
 
-  const handleGenerate = async () => {
-    if (!selectedModel || !prompt.trim()) return;
-    setLoading(true);
-    setResult(null);
-    setStatus("");
-    setProgress(null);
-    try {
-      const req: TestGenerateRequest = {
-        model_id: selectedModel,
-        prompt: prompt.trim(),
-        negative_prompt: negPrompt.trim() || undefined,
-        width,
-        height,
-        steps,
-        guidance,
-        seed,
-      };
-      const res = await testGenerate(req);
-      setResult(res);
-      if (res.status === "ok") {
-        setStatus(`Done in ${res.elapsed}s · seed ${res.seed}`);
-      } else {
-        setStatus(res.error || "Unknown error");
-      }
-    } catch (e: unknown) {
-      setStatus(e instanceof Error ? e.message : "Request failed");
-    } finally {
-      setLoading(false);
-      setProgress(null);
-    }
-  };
+  const progressPct = progress && progress.total > 0 ? Math.round((progress.step / progress.total) * 100) : 0;
 
-  const handleCancel = async () => {
-    await cancelInference().catch(() => {});
-  };
+  const handleCancel = async () => { await cancelInference().catch(() => {}); };
 
   const handleUnload = async () => {
     await unloadTestModel().catch(() => {});
     setStatus("Model unloaded from VRAM.");
   };
 
-  const progressPct = progress && progress.total > 0
-    ? Math.round((progress.step / progress.total) * 100)
-    : 0;
+  // ── Generate ──
+  const handleGenerate = async () => {
+    if (!selectedModel || !prompt.trim()) return;
+    setLoading(true); setGenResult(null); setStatus(""); setProgress(null);
+    try {
+      const res = await testGenerate({ model_id: selectedModel, prompt: prompt.trim(), negative_prompt: negPrompt.trim() || undefined, width, height, steps: genSteps, guidance: genGuidance, seed: genSeed } as TestGenerateRequest);
+      setGenResult(res);
+      setStatus(res.status === "ok" ? `Done in ${res.elapsed}s · seed ${res.seed}` : res.error || "Unknown error");
+    } catch (e: unknown) { setStatus(e instanceof Error ? e.message : "Request failed"); }
+    finally { setLoading(false); setProgress(null); }
+  };
+
+  // ── Edit: image upload ──
+  const handleUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => { setWorkingImage(ev.target?.result as string); setMaskImage(null); setEditResult(null); setSamMasks([]); };
+    reader.readAsDataURL(file);
+  };
+
+  const handleImageClick = async (e: React.MouseEvent<HTMLImageElement>) => {
+    if (maskMode !== "click" || !workingImage) return;
+    const img = e.currentTarget;
+    const rect = img.getBoundingClientRect();
+    const x = Math.round(((e.clientX - rect.left) / rect.width) * img.naturalWidth);
+    const y = Math.round(((e.clientY - rect.top) / rect.height) * img.naturalHeight);
+    setMaskLoading(true);
+    try {
+      const blob = await fetch(workingImage).then((r) => r.blob());
+      const fd = new FormData();
+      fd.append("image", blob, "image.jpg");
+      fd.append("x", String(x)); fd.append("y", String(y));
+      const res: ClickMaskResponse = await clickMask(fd);
+      if (res.masks && res.masks.length > 0) {
+        setSamMasks(res.masks); setSamLabels(res.labels || []); setSamSelected(0);
+        setMaskImage(res.masks[0]);
+      }
+    } catch { /* ignore */ } finally { setMaskLoading(false); }
+  };
+
+  const handleAutoMask = async () => {
+    if (!workingImage) return;
+    setMaskLoading(true);
+    try {
+      const blob = await fetch(workingImage).then((r) => r.blob());
+      const fd = new FormData();
+      fd.append("image", blob, "image.jpg");
+      fd.append("target", maskTarget);
+      const res: MaskResponse = await autoMask(fd);
+      if (res.masks && res.masks.length > 0) setMaskImage(res.masks[0]);
+    } catch { /* ignore */ } finally { setMaskLoading(false); }
+  };
+
+  // ── Edit: apply inpaint ──
+  const handleApplyEdit = async () => {
+    if (!workingImage || !maskImage || !selectedModel) return;
+    setLoading(true); setEditResult(null); setStatus(""); setProgress(null);
+    try {
+      const imgBlob = await fetch(workingImage).then((r) => r.blob());
+      const maskBlob = await fetch(`data:image/png;base64,${maskImage}`).then((r) => r.blob());
+      const fd = new FormData();
+      fd.append("model_id", selectedModel);
+      fd.append("image", imgBlob, "image.jpg");
+      fd.append("mask", maskBlob, "mask.png");
+      fd.append("prompt", editPrompt);
+      fd.append("negative", editNeg);
+      fd.append("steps", String(editSteps));
+      fd.append("strength", String(strength));
+      fd.append("guidance", String(editGuidance));
+      fd.append("mask_expand", String(maskExpand));
+      fd.append("mask_blur", String(maskBlur));
+      fd.append("seed", String(editSeed));
+      fd.append("auto_enrich", String(autoEnrich));
+      fd.append("protect_face", String(protectFace));
+      fd.append("working_long_side", String(workingLongSide));
+      const res = await testEdit(fd);
+      if (res.image) setEditResult(res.image);
+      setStatus(res.status === "ok" ? `Done in ${res.elapsed}s · seed ${res.seed}` : res.error || "Unknown error");
+    } catch (e: unknown) { setStatus(e instanceof Error ? e.message : "Request failed"); }
+    finally { setLoading(false); setProgress(null); }
+  };
+
+  const ProgressSection = () => loading ? (
+    <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 12 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", fontSize: "0.78rem", color: "var(--text-secondary)" }}>
+        <span>{progress?.message || "Initializing..."}</span><span>{progressPct}%</span>
+      </div>
+      <div style={{ background: "var(--bg-tertiary)", borderRadius: 4, height: 6, overflow: "hidden" }}>
+        <div style={{ height: "100%", borderRadius: 4, width: `${progressPct}%`, background: "var(--accent-gradient)", transition: "width 0.4s ease" }} />
+      </div>
+      <button className="btn-secondary" style={{ fontSize: "0.78rem", padding: "5px" }} onClick={handleCancel}>✕ Cancel</button>
+    </div>
+  ) : null;
+
+  if (models.length === 0) return (
+    <div className="fade-in">
+      <h1 style={{ fontSize: "1.5rem", fontWeight: 700, marginBottom: 16 }}>🧪 Test</h1>
+      <div style={{ background: "var(--bg-secondary)", border: "1px dashed var(--border)", borderRadius: 12, padding: 32, textAlign: "center", color: "var(--text-muted)" }}>
+        <div style={{ fontSize: "2rem", marginBottom: 12 }}>🔧</div>
+        <div style={{ fontWeight: 600, marginBottom: 6 }}>No test models configured</div>
+        <div style={{ fontSize: "0.82rem" }}>Set TEST_MODEL_1 … TEST_MODEL_4 in .env.local and restart the backend.</div>
+      </div>
+    </div>
+  );
 
   return (
     <div className="fade-in">
-      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 4 }}>
-        <h1 style={{ fontSize: "1.5rem", fontWeight: 700 }}>🧪 Test</h1>
-        <span style={{ fontSize: "0.72rem", color: "var(--text-muted)", background: "var(--bg-tertiary)", padding: "2px 8px", borderRadius: 6, border: "1px solid var(--border)" }}>
-          local only
-        </span>
+      {/* Header */}
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <h1 style={{ fontSize: "1.5rem", fontWeight: 700 }}>🧪 Test</h1>
+          <span style={{ fontSize: "0.72rem", color: "var(--text-muted)", background: "var(--bg-tertiary)", padding: "2px 8px", borderRadius: 6, border: "1px solid var(--border)" }}>local only</span>
+        </div>
+        <div style={{ display: "flex", gap: 6, background: "var(--bg-tertiary)", borderRadius: 10, padding: 4, border: "1px solid var(--border)" }}>
+          <button className={testMode === "generate" ? "btn-primary" : "btn-secondary"} style={{ padding: "5px 14px", fontSize: "0.8rem" }} onClick={() => setTestMode("generate")}>🎨 Generate</button>
+          <button className={testMode === "edit" ? "btn-primary" : "btn-secondary"} style={{ padding: "5px 14px", fontSize: "0.8rem" }} onClick={() => setTestMode("edit")}>✏️ Edit</button>
+        </div>
       </div>
-      <p style={{ color: "var(--text-secondary)", marginBottom: 24, fontSize: "0.9rem" }}>
-        Experimental model inference · results not saved
+      <p style={{ color: "var(--text-secondary)", marginBottom: 20, fontSize: "0.9rem" }}>
+        {testMode === "generate" ? "Text-to-image · experimental models" : "Image upload + mask · AI inpainting · experimental models"}
       </p>
 
-      {models.length === 0 ? (
-        <div style={{ background: "var(--bg-secondary)", border: "1px dashed var(--border)", borderRadius: 12, padding: 32, textAlign: "center", color: "var(--text-muted)" }}>
-          <div style={{ fontSize: "2rem", marginBottom: 12 }}>🔧</div>
-          <div style={{ fontWeight: 600, marginBottom: 6 }}>No test models configured</div>
-          <div style={{ fontSize: "0.82rem" }}>Set TEST_MODEL_1 … TEST_MODEL_4 in .env.local and restart the backend.</div>
-        </div>
-      ) : (
+      {/* Model selector (shared) */}
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 20 }}>
+        <select className="input-field" value={selectedModel} onChange={(e) => setSelectedModel(e.target.value)} style={{ padding: "8px 12px", fontSize: "0.85rem", minWidth: 180 }}>
+          {models.map((m) => <option key={m} value={m}>{m}</option>)}
+        </select>
+        <button className="btn-secondary" style={{ fontSize: "0.78rem", padding: "7px 14px", whiteSpace: "nowrap" }} onClick={handleUnload} disabled={loading}>Unload VRAM</button>
+      </div>
+
+      {/* ── Generate mode ── */}
+      {testMode === "generate" && (
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 24 }}>
-          {/* Left: Controls */}
           <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
             <div className="glass-card" style={{ padding: 16 }}>
-              <h3 style={{ fontSize: "0.85rem", fontWeight: 600, marginBottom: 10 }}>🔬 Model</h3>
-              <select
-                className="input-field"
-                value={selectedModel}
-                onChange={(e) => setSelectedModel(e.target.value)}
-                style={{ width: "100%", padding: "8px 10px", fontSize: "0.85rem" }}
-              >
-                {models.map((m) => (
-                  <option key={m} value={m}>{m}</option>
-                ))}
-              </select>
-              <button
-                className="btn-secondary"
-                style={{ marginTop: 8, width: "100%", fontSize: "0.78rem" }}
-                onClick={handleUnload}
-                disabled={loading}
-              >
-                Unload from VRAM
-              </button>
-            </div>
-
-            <div className="glass-card" style={{ padding: 16 }}>
               <h3 style={{ fontSize: "0.85rem", fontWeight: 600, marginBottom: 10 }}>💬 Prompt</h3>
-              <textarea
-                className="input-field"
-                rows={3}
-                placeholder="Describe the image..."
-                value={prompt}
-                onChange={(e) => setPrompt(e.target.value)}
-                style={{ fontSize: "0.85rem" }}
-              />
-              <textarea
-                className="input-field"
-                rows={1}
-                placeholder="Negative prompt (optional)"
-                value={negPrompt}
-                onChange={(e) => setNegPrompt(e.target.value)}
-                style={{ marginTop: 6, fontSize: "0.78rem" }}
-              />
+              <textarea className="input-field" rows={3} placeholder="Describe the image..." value={prompt} onChange={(e) => setPrompt(e.target.value)} style={{ fontSize: "0.85rem" }} />
+              <textarea className="input-field" rows={1} placeholder="Negative prompt (optional)" value={negPrompt} onChange={(e) => setNegPrompt(e.target.value)} style={{ marginTop: 6, fontSize: "0.78rem" }} />
             </div>
-
             <div className="glass-card" style={{ padding: 16 }}>
               <h3 style={{ fontSize: "0.85rem", fontWeight: 600, marginBottom: 10 }}>⚙️ Settings</h3>
               <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                 <Slider label="Width" value={width} min={512} max={1536} step={64} onChange={setWidth} />
                 <Slider label="Height" value={height} min={512} max={1536} step={64} onChange={setHeight} />
-                <Slider label="Steps" value={steps} min={10} max={60} step={1} onChange={setSteps} />
-                <Slider label="Guidance" value={guidance} min={1} max={15} step={0.5} onChange={setGuidance} />
+                <Slider label="Steps" value={genSteps} min={10} max={60} step={1} onChange={setGenSteps} />
+                <Slider label="Guidance" value={genGuidance} min={1} max={15} step={0.5} onChange={setGenGuidance} />
                 <div>
                   <label style={{ fontSize: "0.78rem", color: "var(--text-secondary)", marginBottom: 3, display: "block" }}>Seed</label>
-                  <input
-                    type="number"
-                    className="input-field"
-                    placeholder="-1 = random"
-                    value={seed}
-                    onChange={(e) => setSeed(Number(e.target.value))}
-                    style={{ padding: "5px 8px", fontSize: "0.82rem" }}
-                  />
+                  <input type="number" className="input-field" placeholder="-1 = random" value={genSeed} onChange={(e) => setGenSeed(Number(e.target.value))} style={{ padding: "5px 8px", fontSize: "0.82rem" }} />
                 </div>
               </div>
             </div>
-
-            <button
-              className="btn-primary"
-              onClick={handleGenerate}
-              disabled={loading || !prompt.trim()}
-              style={{ padding: "14px 0", fontSize: "0.95rem" }}
-            >
+            <ProgressSection />
+            {status && !loading && (
+              <div className={`status-pill ${genResult?.status === "ok" ? "success" : genResult?.status === "cancelled" ? "" : "error"}`}>{status}</div>
+            )}
+            <button className="btn-primary" onClick={handleGenerate} disabled={loading || !prompt.trim()} style={{ padding: "14px 0", fontSize: "0.95rem" }}>
               {loading ? <><span className="spinner" /> Generating...</> : "▶️ Generate"}
             </button>
-
-            {loading && (
-              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                <div style={{ display: "flex", justifyContent: "space-between", fontSize: "0.78rem", color: "var(--text-secondary)" }}>
-                  <span>{progress?.message || "Initializing..."}</span>
-                  <span>{progressPct}%</span>
-                </div>
-                <div style={{ background: "var(--bg-tertiary)", borderRadius: 4, height: 6, overflow: "hidden" }}>
-                  <div style={{ height: "100%", borderRadius: 4, width: `${progressPct}%`, background: "var(--accent-gradient)", transition: "width 0.4s ease" }} />
-                </div>
-                <button className="btn-secondary" style={{ fontSize: "0.78rem", padding: "5px" }} onClick={handleCancel}>
-                  ✕ Cancel
-                </button>
-              </div>
-            )}
-
-            {status && !loading && (
-              <div
-                className={`status-pill ${result?.status === "ok" ? "success" : result?.status === "cancelled" ? "" : "error"}`}
-              >
-                {status}
-              </div>
-            )}
           </div>
-
-          {/* Right: Result */}
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             <span style={{ fontSize: "0.85rem", fontWeight: 600, color: "var(--text-secondary)" }}>Result</span>
             <div className={`image-display ${loading ? "loading" : ""}`} style={{ minHeight: 480 }}>
-              {result?.image ? (
-                <img
-                  src={`data:image/jpeg;base64,${result.image}`}
-                  alt="Test result"
-                  className="scale-pop"
-                  style={{ width: "100%", height: "100%", objectFit: "contain" }}
-                />
+              {genResult?.image ? (
+                <img src={`data:image/jpeg;base64,${genResult.image}`} alt="Result" className="scale-pop" style={{ width: "100%", height: "100%", objectFit: "contain" }} />
               ) : (
                 <div style={{ color: "var(--text-muted)", textAlign: "center", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100%" }}>
                   <div style={{ fontSize: "3rem", marginBottom: 12, opacity: 0.3 }}>🧪</div>
@@ -917,16 +941,160 @@ function TestPage() {
                 </div>
               )}
             </div>
-            {result?.image && (
-              <a
-                href={`data:image/jpeg;base64,${result.image}`}
-                download={`test_${result.seed}.jpg`}
-                className="btn-secondary"
-                style={{ textAlign: "center", textDecoration: "none", padding: "8px 16px", fontSize: "0.85rem" }}
-              >
-                ⬇️ Download
-              </a>
+            {genResult?.image && (
+              <a href={`data:image/jpeg;base64,${genResult.image}`} download={`test_gen_${genResult.seed}.jpg`} className="btn-secondary" style={{ textAlign: "center", textDecoration: "none", padding: "8px 16px", fontSize: "0.85rem" }}>⬇️ Download</a>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* ── Edit mode ── */}
+      {testMode === "edit" && (
+        <div>
+          {/* Top row: source | result */}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20, marginBottom: 20 }}>
+            {/* Source + mask overlay */}
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <span style={{ fontSize: "0.85rem", fontWeight: 600, color: "var(--text-secondary)" }}>Source Image</span>
+                {workingImage && <button style={{ background: "none", border: "none", color: "var(--text-muted)", fontSize: "0.8rem", cursor: "pointer" }} onClick={() => { setWorkingImage(null); setMaskImage(null); setEditResult(null); setSamMasks([]); }}>✕ Clear</button>}
+              </div>
+              <div className="image-display" style={{ minHeight: 400, position: "relative", cursor: workingImage ? (maskMode === "click" ? "crosshair" : "default") : "pointer" }}
+                onClick={() => !workingImage && fileInputRef.current?.click()}>
+                {workingImage ? (
+                  <>
+                    <img src={workingImage} alt="Source" onClick={handleImageClick} style={{ width: "100%", height: "100%", objectFit: "contain", cursor: maskMode === "click" ? "crosshair" : "default" }} />
+                    {maskImage && <img src={`data:image/png;base64,${maskImage}`} alt="Mask" style={{ position: "absolute", top: 0, left: 0, width: "100%", height: "100%", objectFit: "contain", opacity: 0.45, mixBlendMode: "screen", pointerEvents: "none" }} />}
+                    {maskLoading && <div style={{ position: "absolute", top: "50%", left: "50%", transform: "translate(-50%,-50%)", background: "rgba(0,0,0,0.7)", padding: "8px 16px", borderRadius: 8, color: "white", fontSize: "0.85rem" }}><span className="spinner" /> Analyzing...</div>}
+                  </>
+                ) : (
+                  <label style={{ cursor: "pointer", color: "var(--text-muted)", textAlign: "center", padding: 40, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100%" }}>
+                    <div style={{ fontSize: "3rem", marginBottom: 12, opacity: 0.3 }}>📤</div>
+                    <div>Click to upload image</div>
+                  </label>
+                )}
+                <input ref={fileInputRef} type="file" accept="image/*" style={{ display: "none" }} onChange={handleUpload} />
+              </div>
+            </div>
+            {/* Result */}
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              <span style={{ fontSize: "0.85rem", fontWeight: 600, color: "var(--text-secondary)" }}>Result</span>
+              <div className={`image-display ${loading ? "loading" : ""}`} style={{ minHeight: 400 }}>
+                {editResult ? (
+                  <img src={`data:image/jpeg;base64,${editResult}`} alt="Result" className="scale-pop" style={{ width: "100%", height: "100%", objectFit: "contain" }} />
+                ) : (
+                  <div style={{ color: "var(--text-muted)", textAlign: "center", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100%" }}>
+                    <div style={{ fontSize: "3rem", marginBottom: 12, opacity: 0.3 }}>📸</div>
+                    <div>Edited result will appear here</div>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+
+          <ProgressSection />
+          {status && !loading && (
+            <div className={`status-pill ${editResult ? "success" : status.startsWith("Cancelled") ? "" : "error"}`} style={{ marginBottom: 16 }}>{status}</div>
+          )}
+
+          {/* Bottom controls: 3 columns */}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 16 }}>
+            {/* Col 1: Prompt + Mask */}
+            <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+              <div className="glass-card" style={{ padding: 16 }}>
+                <h3 style={{ fontSize: "0.85rem", fontWeight: 600, marginBottom: 10 }}>💬 Prompt</h3>
+                <textarea className="input-field" rows={2} placeholder="Describe what to change..." value={editPrompt} onChange={(e) => setEditPrompt(e.target.value)} style={{ fontSize: "0.85rem" }} />
+                <textarea className="input-field" rows={1} placeholder="Negative (optional)" value={editNeg} onChange={(e) => setEditNeg(e.target.value)} style={{ marginTop: 6, fontSize: "0.78rem" }} />
+                <label style={{ display: "flex", alignItems: "center", gap: 5, fontSize: "0.8rem", color: "var(--text-secondary)", cursor: "pointer", marginTop: 8 }}>
+                  <input type="checkbox" checked={autoEnrich} onChange={(e) => setAutoEnrich(e.target.checked)} /> Auto negative prompt
+                </label>
+              </div>
+              <div className="glass-card" style={{ padding: 16 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+                  <h3 style={{ fontSize: "0.85rem", fontWeight: 600 }}>🎭 Mask</h3>
+                  <div style={{ display: "flex", gap: 4 }}>
+                    <button className={maskMode === "click" ? "btn-primary" : "btn-secondary"} style={{ padding: "3px 10px", fontSize: "0.72rem" }} onClick={() => setMaskMode("click")}>🖱️ Click (SAM)</button>
+                    <button className={maskMode === "auto" ? "btn-primary" : "btn-secondary"} style={{ padding: "3px 10px", fontSize: "0.72rem" }} onClick={() => setMaskMode("auto")}>🎯 Auto</button>
+                  </div>
+                </div>
+                {maskMode === "auto" && (
+                  <div style={{ display: "flex", gap: 6 }}>
+                    <select className="input-field" style={{ padding: "6px 10px", flex: 1, fontSize: "0.8rem" }} value={maskTarget} onChange={(e) => setMaskTarget(e.target.value)}>
+                      <option value="top">Top</option>
+                      <option value="pants">Pants / Skirt</option>
+                      <option value="dress">Dress</option>
+                      <option value="hair">Hair</option>
+                      <option value="face">Face</option>
+                      <option value="accessories">Accessories</option>
+                      <option value="background">Background</option>
+                      <option value="person">Full Person</option>
+                    </select>
+                    <button className="btn-secondary" onClick={handleAutoMask} disabled={maskLoading || !workingImage} style={{ fontSize: "0.78rem" }}>
+                      {maskLoading ? <span className="spinner" /> : "Generate"}
+                    </button>
+                  </div>
+                )}
+                {maskMode === "click" && (
+                  <div style={{ fontSize: "0.78rem", color: "var(--text-secondary)", lineHeight: 1.4 }}>
+                    Click on the source image to select a region.
+                    {samMasks.length > 0 && (
+                      <div style={{ marginTop: 8, display: "flex", gap: 4, alignItems: "center" }}>
+                        <span style={{ fontWeight: 600, marginRight: 4 }}>Size:</span>
+                        {samMasks.map((_, i) => (
+                          <button key={i} className={samSelected === i ? "btn-primary" : "btn-secondary"} style={{ padding: "3px 12px", fontSize: "0.72rem", fontWeight: 600, minWidth: 36 }}
+                            onClick={() => { setSamSelected(i); setMaskImage(samMasks[i]); }}>
+                            {samLabels[i] || ["S", "M", "L"][i]}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+                {maskImage && (
+                  <button className="btn-secondary" style={{ marginTop: 8, width: "100%", fontSize: "0.78rem", padding: "6px" }} onClick={() => { setMaskImage(null); setSamMasks([]); setSamLabels([]); setSamSelected(0); }}>🗑️ Clear Mask</button>
+                )}
+              </div>
+            </div>
+
+            {/* Col 2: Settings */}
+            <div className="glass-card" style={{ padding: 16 }}>
+              <h3 style={{ fontSize: "0.85rem", fontWeight: 600, marginBottom: 10 }}>⚙️ Settings</h3>
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                <Slider label="Strength" value={strength} min={0.3} max={0.95} step={0.05} onChange={setStrength} />
+                <Slider label="Steps" value={editSteps} min={10} max={60} step={1} onChange={setEditSteps} />
+                <Slider label="Guidance" value={editGuidance} min={1} max={12} step={0.5} onChange={setEditGuidance} />
+                <Slider label="Resolution" value={workingLongSide} min={512} max={1536} step={64} onChange={setWorkingLongSide} />
+                <Slider label="Mask Expand" value={maskExpand} min={0} max={30} step={1} onChange={setMaskExpand} />
+                <Slider label="Mask Blur" value={maskBlur} min={0} max={40} step={1} onChange={setMaskBlur} />
+                <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: "0.82rem", color: "var(--text-primary)", cursor: "pointer", marginTop: 4 }}>
+                  <input type="checkbox" checked={protectFace} onChange={(e) => setProtectFace(e.target.checked)} />
+                  🛡️ Protect Face & Hair
+                </label>
+                <div>
+                  <label style={{ fontSize: "0.78rem", color: "var(--text-secondary)", marginBottom: 3, display: "block" }}>Seed</label>
+                  <input type="number" className="input-field" placeholder="-1 = random" value={editSeed} onChange={(e) => setEditSeed(Number(e.target.value))} style={{ padding: "5px 8px", fontSize: "0.82rem" }} />
+                </div>
+              </div>
+            </div>
+
+            {/* Col 3: Apply + post-actions */}
+            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+              <button className="btn-primary" onClick={handleApplyEdit} disabled={loading || !workingImage || !maskImage} style={{ padding: "14px 0", fontSize: "0.95rem" }}>
+                {loading ? <><span className="spinner" /> Applying...</> : "▶️ Apply Edit"}
+              </button>
+              {editResult && (
+                <>
+                  <button className="btn-secondary" style={{ width: "100%", fontSize: "0.85rem" }}
+                    onClick={() => { setWorkingImage(`data:image/jpeg;base64,${editResult}`); setEditResult(null); setMaskImage(null); setStatus(""); }}>
+                    🔄 Use Result as Source
+                  </button>
+                  <a href={`data:image/jpeg;base64,${editResult}`} download={`test_edit_${editSeed}.jpg`} className="btn-secondary"
+                    style={{ width: "100%", fontSize: "0.85rem", textAlign: "center", textDecoration: "none", display: "block", padding: "8px 16px" }}>
+                    ⬇️ Download Result
+                  </a>
+                </>
+              )}
+            </div>
           </div>
         </div>
       )}
