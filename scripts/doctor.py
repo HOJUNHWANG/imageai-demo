@@ -12,7 +12,6 @@ REQUIRED = (
     "transformers",
     "accelerate",
     "bitsandbytes",
-    "xformers",
     "fastapi",
     "PIL",
     "psutil",
@@ -38,6 +37,12 @@ def main() -> None:
             props = torch.cuda.get_device_properties(0)
             print(f"\nGPU: {props.name} ({props.total_memory / 1024**3:.1f} GB)")
             print(f"CUDA: {torch.version.cuda}")
+            try:
+                xformers = importlib.import_module("xformers")
+                print(f"xFormers: {xformers.__version__}")
+            except Exception as exc:
+                missing.append("xformers")
+                print(f"  --  xformers: {exc}")
         else:
             print("\nGPU: CUDA unavailable")
     except Exception:

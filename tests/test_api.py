@@ -16,6 +16,8 @@ def test_runtime_endpoints_do_not_load_models() -> None:
     assert config["profiles"]["generate"]["quality"]["model_id"] == "kpsss34/FHDR_Uncensored"
     assert config["profiles"]["edit"]["fast"]["steps"] == 4
     assert status["model"]["loaded"] is False
-    assert status["hardware"]["gpu_name"]
+    assert status["hardware"]["device"] in {"cpu", "cuda"}
+    if status["hardware"]["device"] == "cuda":
+        assert status["hardware"]["gpu_name"]
     assert status["job"]["overall_progress"] >= 0
     assert "eta_seconds" in status["job"]
