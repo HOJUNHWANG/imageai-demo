@@ -1,83 +1,148 @@
-"""
-Shared runtime configuration for ImageAI Studio backend.
-Extracted from app.py globals.
-"""
+"""Runtime configuration and the six model profiles."""
+from __future__ import annotations
+
 import os
+from dataclasses import asdict, dataclass
+
 import torch
 
-# Memory behavior
+
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
-if os.getenv("DEBUG_CUDA", "0") == "1":
-    os.environ.setdefault("CUDA_LAUNCH_BLOCKING", "1")
 
-# Speed boost on RTX 30/40
-torch.backends.cuda.matmul.allow_tf32 = True
-torch.backends.cudnn.allow_tf32 = True
+@dataclass(frozen=True)
+class ModelProfile:
+    id: str
+    label: str
+    model_id: str
+    family: str
+    description: str
+    steps: int
+    guidance: float
+    true_cfg: float = 1.0
+    long_side: int = 1024
+    max_pixels: int = 1024 * 1024
+    transformer_id: str | None = None
+    transformer_subfolder: str | None = "transformer"
+    lora_id: str | None = None
+    lora_weight: str | None = None
+    prequantized: bool = False
+    gated: bool = False
+    content_tuning: str = "none"
 
-# Paths
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))  # imageAI_public/
-WEIGHTS_DIR = os.path.join(BASE_DIR, "weights")
-MODELS_DIR = os.path.join(BASE_DIR, "models", "stable-diffusion-xl")
+    def public(self) -> dict:
+        data = asdict(self)
+        data.pop("transformer_subfolder")
+        return data
 
-JUGGERNAUT_INPAINT = os.path.join(MODELS_DIR, "juggernautXL_ragnarokBy.safetensors")
-DEFAULT_MODEL = "diffusers/stable-diffusion-xl-1.0-inpainting-0.1"
 
-CONTROLNET_DEPTH = "diffusers/controlnet-depth-sdxl-1.0"
-CONTROLNET_OPENPOSE = "thibaud/controlnet-openpose-sdxl-1.0"
-CONTROLNET_CANNY = "diffusers/controlnet-canny-sdxl-1.0"
-
-FLUX_FILL_MODEL = os.getenv("FLUX_FILL_MODEL", "black-forest-labs/FLUX.1-Fill-dev")
-FLUX_KONTEXT_MODEL = os.getenv("FLUX_KONTEXT_MODEL", "black-forest-labs/FLUX.1-Kontext-dev")
-
-# Test models — paths set via .env.local only, never committed to git.
-# Add up to 4 slots. Leave unset to hide from the UI.
-_TEST_SLOTS = ["TEST_MODEL_1", "TEST_MODEL_2", "TEST_MODEL_3", "TEST_MODEL_4"]
-TEST_MODELS: dict[str, str] = {
-    slot.lower(): os.getenv(slot, "")
-    for slot in _TEST_SLOTS
-    if os.getenv(slot, "")
+GENERATE_PROFILES = {
+    "quality": ModelProfile(
+        id="quality",
+        label="Quality",
+        model_id=os.getenv("GENERATE_QUALITY_MODEL", "kpsss34/FHDR_Uncensored"),
+        family="flux",
+        description="Highest detail and prompt fidelity; slow 40-step FLUX render.",
+        steps=40,
+        guidance=4.0,
+        gated=True,
+        content_tuning="uncensored",
+    ),
+    "balanced": ModelProfile(
+        id="balanced",
+        label="Balanced",
+        model_id=os.getenv("GENERATE_BALANCED_MODEL", "Bl4ckSpaces/z-image-turbo-nsfw-nf4"),
+        family="zimage",
+        description="NSFW-tuned, pre-quantized Z-Image with a good speed/detail tradeoff.",
+        steps=8,
+        guidance=0.0,
+        prequantized=True,
+        gated=True,
+        content_tuning="nsfw",
+    ),
+    "fast": ModelProfile(
+        id="fast",
+        label="Fast",
+        model_id=os.getenv("GENERATE_FAST_MODEL", "KaraKaraWitch/Z-Image-Turbo-TE-Heretic"),
+        family="zimage",
+        description="Fast 8-step Z-Image with an abliterated text encoder for fewer refusals.",
+        steps=8,
+        guidance=0.0,
+        long_side=896,
+        max_pixels=896 * 896,
+        content_tuning="abliterated text encoder",
+    ),
 }
-TEST_MODELS_DIR = os.path.join(BASE_DIR, "models", "test")
 
-# torch.compile for SDXL UNet — 20-40% speedup after first run.
-# First load adds ~60-120s compilation time. Requires PyTorch 2.0+.
-COMPILE_UNET = os.getenv("COMPILE_UNET", "0") == "1"
+EDIT_BASE_MODEL = os.getenv("EDIT_BASE_MODEL", "Qwen/Qwen-Image-Edit-2511")
+EDIT_PROFILES = {
+    "quality": ModelProfile(
+        id="quality",
+        label="Quality",
+        model_id=EDIT_BASE_MODEL,
+        family="qwen_edit",
+        description="Full 40-step Qwen 2511 edit for the strongest source consistency.",
+        steps=40,
+        guidance=1.0,
+        true_cfg=4.0,
+        content_tuning="base weights",
+    ),
+    "balanced": ModelProfile(
+        id="balanced",
+        label="Balanced",
+        model_id=EDIT_BASE_MODEL,
+        family="qwen_edit",
+        description="Official 8-step Lightning adapter; much faster with modest detail loss.",
+        steps=8,
+        guidance=1.0,
+        true_cfg=1.0,
+        long_side=896,
+        max_pixels=896 * 896,
+        lora_id=os.getenv("EDIT_BALANCED_LORA", "lightx2v/Qwen-Image-Edit-2511-Lightning"),
+        lora_weight="Qwen-Image-Edit-2511-Lightning-8steps-V1.0-bf16.safetensors",
+        content_tuning="distilled LoRA",
+    ),
+    "fast": ModelProfile(
+        id="fast",
+        label="Fast",
+        model_id=EDIT_BASE_MODEL,
+        family="qwen_edit",
+        description="Rapid AIO NSFW v23 transformer distilled for four-step edits.",
+        steps=4,
+        guidance=1.0,
+        true_cfg=1.0,
+        long_side=768,
+        max_pixels=768 * 768,
+        transformer_id=os.getenv("EDIT_FAST_TRANSFORMER", "prithivMLmods/Qwen-Image-Edit-Rapid-AIO-V23"),
+        transformer_subfolder=None,
+        content_tuning="NSFW rapid transformer",
+    ),
+}
 
-def _env_int(key: str, default: int) -> int:
-    try:
-        return int(os.getenv(key, str(default)))
-    except ValueError:
-        print(f"[CONFIG] Warning: invalid value for {key}, using default {default}")
-        return default
+DEFAULT_PROFILE = os.getenv("DEFAULT_PROFILE", "balanced")
+ENABLE_4BIT = os.getenv("ENABLE_4BIT", "1") == "1"
+QUANTIZE_TEXT_ENCODERS = os.getenv("QUANTIZE_TEXT_ENCODERS", "1") == "1"
+CPU_OFFLOAD = os.getenv("CPU_OFFLOAD", "1") == "1"
+ATTENTION_BACKEND = os.getenv("ATTENTION_BACKEND", "xformers")
+LOCAL_FILES_ONLY = os.getenv("LOCAL_FILES_ONLY", "0") == "1"
+HF_TOKEN = os.getenv("HF_TOKEN") or None
 
-def _env_float(key: str, default: float) -> float:
-    try:
-        return float(os.getenv(key, str(default)))
-    except ValueError:
-        print(f"[CONFIG] Warning: invalid value for {key}, using default {default}")
-        return default
+MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", "32"))
+MAX_LONG_SIDE = int(os.getenv("MAX_LONG_SIDE", "1280"))
+MAX_PIXELS = int(os.getenv("MAX_PIXELS", str(1024 * 1024)))
 
-# Public demo flags
-PUBLIC_DEMO = os.getenv("PUBLIC_DEMO", "1") == "1"
-PUBLIC_MAX_LONG_SIDE = _env_int("PUBLIC_MAX_LONG_SIDE", 896)
-PUBLIC_MAX_STEPS = _env_int("PUBLIC_MAX_STEPS", 22)
-PUBLIC_MAX_QUEUE = _env_int("PUBLIC_MAX_QUEUE", 10)
-PUBLIC_CONCURRENCY = _env_int("PUBLIC_CONCURRENCY", 1)
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+DTYPE = torch.bfloat16 if DEVICE == "cuda" else torch.float32
 
-# VRAM/RAM stability toggles
-LOW_VRAM = os.getenv("LOW_VRAM", "1" if PUBLIC_DEMO else "0") == "1"
-CPU_OFFLOAD = os.getenv("CPU_OFFLOAD", "0") == "1"
-AUTO_UNLOAD_AUX = os.getenv("AUTO_UNLOAD_AUX", "1" if PUBLIC_DEMO else "0") == "1"
-AUTO_HARD_CLEAR_THRESHOLD = _env_float("AUTO_HARD_CLEAR_THRESHOLD", 0.92)
-
-# Device
-def pick_device() -> str:
-    if torch.cuda.is_available():
-        return "cuda"
-    return "cpu"
-
-DEVICE = pick_device()
+if DEVICE == "cuda":
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
 torch.set_float32_matmul_precision("high")
 
-print(f"DEVICE={DEVICE}")
+
+def get_profile(kind: str, profile_id: str) -> ModelProfile:
+    profiles = GENERATE_PROFILES if kind == "generate" else EDIT_PROFILES
+    try:
+        return profiles[profile_id]
+    except KeyError as exc:
+        raise ValueError(f"Unknown {kind} profile: {profile_id}") from exc

@@ -1,9 +1,9 @@
 @echo off
 setlocal enabledelayedexpansion
-title ImageAI Studio
+title Morrow Local Image Studio
 
 echo ========================================
-echo   ImageAI Studio - Setup ^& Start
+echo   Morrow - Setup ^& Start
 echo ========================================
 echo.
 
@@ -49,13 +49,6 @@ for /d %%D in ("%~dp0venv311\Lib\site-packages\~*") do (
     rmdir /s /q "%%D" >nul 2>&1
 )
 
-:: Remove xformers if present — incompatible with torch 2.6+cu124
-"%VENV_PY%" -c "import xformers" >nul 2>&1
-if not errorlevel 1 (
-    echo        Removing xformers ^(incompatible with current torch^)...
-    "%VENV_PY%" -m pip uninstall xformers -y -q
-)
-
 :: Determine GPU presence once
 set HAS_GPU=0
 nvidia-smi >nul 2>&1
@@ -87,6 +80,24 @@ if "%HAS_GPU%"=="1" (
     )
 )
 
+:: Install only the xFormers wheel whose ABI matches torch 2.6 + CUDA 12.4.
+:: Other torch/CUDA combinations safely keep native SDPA.
+if "%HAS_GPU%"=="1" (
+    "%VENV_PY%" -c "import torch; exit(0 if torch.__version__.startswith('2.6.') and torch.version.cuda == '12.4' else 1)" >nul 2>&1
+    if not errorlevel 1 (
+        "%VENV_PY%" -c "import xformers; exit(0 if xformers.__version__ == '0.0.29.post2' else 1)" >nul 2>&1
+        if errorlevel 1 (
+            echo        Installing compatible xFormers 0.0.29.post2...
+            "%VENV_PY%" -m pip install --no-deps xformers==0.0.29.post2 --index-url https://download.pytorch.org/whl/cu124 -q
+            if errorlevel 1 echo        xFormers unavailable - native SDPA will be used.
+        ) else (
+            echo        Compatible xFormers already installed.
+        )
+    ) else (
+        echo        Torch/CUDA ABI differs - keeping native SDPA instead of forcing xFormers.
+    )
+)
+
 :: ── 3b: Install remaining requirements ───────────────────────────────────────
 set SENTINEL=%~dp0venv311\.installed_hash
 set REQ_FILE=%~dp0requirements.txt
@@ -111,10 +122,10 @@ if "!NEED_INSTALL!"=="1" (
 
 :: ── Step 4: Install frontend dependencies ────────────────────────────────────
 echo [4/6] Checking frontend dependencies...
-if not exist "%~dp0frontend\node_modules\.package-lock.json" (
+if not exist "%~dp0frontend\node_modules\next\package.json" (
     echo        Running npm install...
     pushd "%~dp0frontend"
-    call npm install --prefer-offline --loglevel error
+    call npm install --prefer-offline --no-audit --no-fund --loglevel error
     if errorlevel 1 ( echo [ERROR] npm install failed. & popd & pause & exit /b 1 )
     popd
     echo        Frontend dependencies installed.
@@ -122,7 +133,7 @@ if not exist "%~dp0frontend\node_modules\.package-lock.json" (
     echo        node_modules already present.
 )
 
-:: ── Step 5: Load .env.local (test model paths, never committed) ──────────────
+:: ── Step 5: Load .env.local (model configuration, never committed) ──────────
 if exist "%~dp0.env.local" (
     echo [ENV]  Loading .env.local...
     for /f "usebackq tokens=1,* delims==" %%A in ("%~dp0.env.local") do (
@@ -141,9 +152,9 @@ for /f "tokens=5" %%a in ('netstat -aon 2^>nul ^| findstr ":3000 " ^| findstr "L
 del /f "%~dp0frontend\.next\dev\lock" >nul 2>&1
 timeout /t 1 /nobreak >nul
 
-start "ImageAI Backend" cmd /k "cd /d %~dp0 && venv311\Scripts\python.exe -m uvicorn backend.main:app --host 127.0.0.1 --port 8000"
+start "Morrow Backend" cmd /k "cd /d %~dp0 && venv311\Scripts\python.exe -m uvicorn backend.main:app --host 127.0.0.1 --port 8000"
 timeout /t 3 /nobreak >nul
-start "ImageAI Frontend" cmd /k "cd /d %~dp0frontend && npm run dev"
+start "Morrow Frontend" cmd /k "cd /d %~dp0frontend && npm run dev"
 
 echo.
 echo ========================================

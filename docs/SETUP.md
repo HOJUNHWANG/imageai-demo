@@ -1,26 +1,16 @@
-# Setup Notes
+# Setup
 
-## Quick start (UI only)
-If you want to verify the UI without downloading large models:
+1. Copy `.env.local.example` to `.env.local`.
+2. Add a Hugging Face read token to `HF_TOKEN`.
+3. Accept the model terms for the gated Quality and Balanced generation repos
+   listed in `README.md`.
+4. Run `start.bat` and open `http://localhost:3000`.
 
-```bash
-set MOCK_INPAINT=1
-python app.py
-```
+Each profile downloads lazily. First-use load time includes network and cache
+work; repeat requests on the same profile reuse the loaded pipeline. Switching
+profile or workflow intentionally keeps only one pipeline resident to stay
+within 12 GB VRAM and reasonable system RAM.
 
-## MediaPipe model file
-Auto-mask uses MediaPipe Tasks segmentation and expects:
-
-- `weights/selfie_multiclass_256x256.tflite`
-
-If the file is missing, the app will warn on boot and auto-mask will be disabled.
-
-## SAM weights
-Manual click-to-mask uses SAM and expects one of:
-- `weights/sam_vit_b_01ec64.pth`
-- `weights/sam_vit_h_4b8939.pth`
-
-## ControlNet folders (optional)
-If you want to enable ControlNet with local files, place them under:
-- `models/ControlNet/controlnet-depth-sdxl-1.0`
-- `models/ControlNet/controlnet-openpose-sdxl-1.0`
+Run `venv311\Scripts\python.exe scripts\doctor.py` to verify dependencies and
+CUDA without loading weights. Set `LOCAL_FILES_ONLY=1` after every required
+profile is cached if the machine should run fully offline.

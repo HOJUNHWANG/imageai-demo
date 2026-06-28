@@ -8,6 +8,10 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
 
 # --- Virtual env ---
 .venv/
@@ -21,11 +25,14 @@ ENV/
 Thumbs.db
 .vscode/
 .idea/
+.agents/
+.codex/
 
 # --- Secrets / local config ---
 .env
 .env.local
 .env.*
+!.env.example
 !.env.local.example
 
 # --- Temp & Caches ---
@@ -38,6 +45,10 @@ weights/
 *.safetensors
 *.ckpt
 *.onnx
+*.gguf
+*.pt
+*.pt2
+*.engine
 models/
 
 # --- Outputs ---
@@ -51,6 +62,10 @@ last_seed.txt
 frontend/node_modules/
 frontend/.next/
 frontend/out/
+frontend/.turbo/
+*.tsbuildinfo
+npm-debug.log*
+pnpm-debug.log*
 
 # --- Debug files ---
 debug_*.py

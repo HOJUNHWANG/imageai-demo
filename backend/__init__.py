@@ -1,1 +1,1 @@
-# ImageAI Studio Backend
+# Morrow backend package.

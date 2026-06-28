@@ -1,57 +1,35 @@
-"""
-ImageAI Studio — FastAPI Backend
-"""
-import sys
-import os
-import logging
+"""Morrow local image studio API."""
+from __future__ import annotations
 
-# Ensure project root is on path for imports
+import logging
+import os
+import sys
+from contextlib import asynccontextmanager
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-logging.basicConfig(
-    level=os.getenv("LOG_LEVEL", "INFO").upper(),
-    format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
-    datefmt="%H:%M:%S",
-)
-logger = logging.getLogger(__name__)
-
-from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
 
-from .routers import generate, edit, mask, system, kontext, test_generate
+from .core.models import MODELS
+from .routers import studio
+
+logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"), format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Startup/shutdown lifecycle. Models lazy-load on first request."""
-    logger.info("[BOOT] ImageAI Studio backend ready (models will lazy-load on first request).")
     yield
-    logger.info("[SHUTDOWN] Cleaning up...")
+    MODELS.unload()
 
 
-app = FastAPI(
-    title="ImageAI Studio",
-    version="2.0.0",
-    lifespan=lifespan,
-)
-
-# CORS — configurable via CORS_ORIGINS env var (comma-separated)
-_default_origins = "http://localhost:3000,http://127.0.0.1:3000"
-_cors_origins = [o.strip() for o in os.getenv("CORS_ORIGINS", _default_origins).split(",") if o.strip()]
+app = FastAPI(title="Morrow", version="3.0.0", lifespan=lifespan)
+origins = os.getenv("CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000").split(",")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=_cors_origins,
+    allow_origins=[origin.strip() for origin in origins],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# API routers
-app.include_router(generate.router, prefix="/api", tags=["generate"])
-app.include_router(edit.router, prefix="/api", tags=["edit"])
-app.include_router(kontext.router, prefix="/api", tags=["kontext"])
-app.include_router(mask.router, prefix="/api", tags=["mask"])
-app.include_router(system.router, prefix="/api", tags=["system"])
-app.include_router(test_generate.router, prefix="/api", tags=["test"])
+app.include_router(studio.router, prefix="/api")

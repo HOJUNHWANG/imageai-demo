@@ -1,95 +1,51 @@
-"""Environment checker for ImageAI Studio.
-
-Run:
-  python scripts/doctor.py
-
-Checks that required models and dependencies are available.
-"""
+"""Check the local studio without downloading model weights."""
 from __future__ import annotations
 
-import os
 import importlib
+import platform
+import sys
 
-BASE_DIR = os.path.dirname(os.path.dirname(__file__))
-WEIGHTS_DIR = os.path.join(BASE_DIR, "weights")
-MODELS_DIR = os.path.join(BASE_DIR, "models", "stable-diffusion-xl")
 
-FILE_CHECKS = {
-    "MediaPipe tflite": os.path.join(WEIGHTS_DIR, "selfie_multiclass_256x256.tflite"),
-}
-
-OPTIONAL_FILES = {
-    "JuggernautXL checkpoint": os.path.join(MODELS_DIR, "juggernautXL_ragnarokBy.safetensors"),
-}
-
-REQUIRED_PACKAGES = [
-    "torch", "diffusers", "transformers", "accelerate",
-    "fastapi", "uvicorn", "PIL", "numpy", "mediapipe",
-]
-
-OPTIONAL_PACKAGES = [
-    ("bitsandbytes", "NF4 quantization for FLUX"),
-    ("xformers", "Memory-efficient attention"),
-    ("cv2", "OpenCV (mask post-processing)"),
-]
+REQUIRED = (
+    "torch",
+    "diffusers",
+    "transformers",
+    "accelerate",
+    "bitsandbytes",
+    "xformers",
+    "fastapi",
+    "PIL",
+    "psutil",
+)
 
 
 def main() -> None:
-    print("ImageAI Studio — Environment Check\n")
-    issues = 0
-
-    # Required files
-    print("── Required Files ──")
-    for name, path in FILE_CHECKS.items():
-        ok = os.path.exists(path)
-        print(f"  {'✓' if ok else '✗'} {name}: {path}")
-        if not ok:
-            issues += 1
-
-    # Optional files
-    print("\n── Optional Files ──")
-    for name, path in OPTIONAL_FILES.items():
-        ok = os.path.exists(path)
-        print(f"  {'✓' if ok else '–'} {name}: {path}")
-
-    # Required packages
-    print("\n── Required Packages ──")
-    for pkg in REQUIRED_PACKAGES:
+    print("Morrow local environment\n")
+    print(f"Python: {sys.version.split()[0]} ({platform.system()})")
+    missing: list[str] = []
+    for package in REQUIRED:
         try:
-            importlib.import_module(pkg)
-            print(f"  ✓ {pkg}")
-        except ImportError:
-            print(f"  ✗ {pkg} — MISSING")
-            issues += 1
+            module = importlib.import_module(package)
+            version = getattr(module, "__version__", "installed")
+            print(f"  OK  {package} {version}")
+        except Exception as exc:
+            missing.append(package)
+            print(f"  --  {package}: {exc}")
 
-    # Optional packages
-    print("\n── Optional Packages ──")
-    for pkg, desc in OPTIONAL_PACKAGES:
-        try:
-            importlib.import_module(pkg)
-            print(f"  ✓ {pkg} — {desc}")
-        except ImportError:
-            print(f"  – {pkg} — {desc} (not installed)")
-
-    # GPU check
-    print("\n── GPU ──")
     try:
         import torch
         if torch.cuda.is_available():
-            name = torch.cuda.get_device_name(0)
-            mem = torch.cuda.get_device_properties(0).total_memory / (1024**3)
-            print(f"  ✓ {name} ({mem:.1f} GB)")
+            props = torch.cuda.get_device_properties(0)
+            print(f"\nGPU: {props.name} ({props.total_memory / 1024**3:.1f} GB)")
+            print(f"CUDA: {torch.version.cuda}")
         else:
-            print("  – No CUDA GPU detected (CPU mode)")
-    except Exception as e:
-        print(f"  ✗ GPU check failed: {e}")
+            print("\nGPU: CUDA unavailable")
+    except Exception:
+        pass
 
-    print()
-    if issues:
-        print(f"⚠ {issues} issue(s) found. Fix them before running.")
-        raise SystemExit(1)
-    else:
-        print("✓ All checks passed.")
+    if missing:
+        raise SystemExit(f"\nMissing: {', '.join(missing)}")
+    print("\nEnvironment is ready. Models download lazily on first use.")
 
 
 if __name__ == "__main__":

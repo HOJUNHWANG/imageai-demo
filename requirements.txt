@@ -1,29 +1,19 @@
-# Core — CPU-safe (no GPU-only packages here)
-# NOTE: torch/torchvision are intentionally excluded here.
-#       start.bat installs CUDA-enabled torch before this file.
-#       GPU extras (xformers) → requirements-gpu.txt
-#       Dev tools (ruff, pytest) → requirements-dev.txt
+# Torch and torchvision are installed separately by start.bat for the active CUDA runtime.
 
-# AI Pipeline
+# Image pipelines
 diffusers==0.37.1
-transformers==4.48.3
-accelerate==1.13.0
-huggingface_hub==0.36.2
+transformers>=4.51.3,<5
+accelerate>=1.13,<2
+huggingface_hub>=0.36,<1
+bitsandbytes>=0.49,<1
+safetensors>=0.5,<1
+sentencepiece>=0.2,<1
+protobuf>=5,<7
 
-# Backend Server
-fastapi==0.136.1
-uvicorn[standard]==0.46.0
-python-multipart==0.0.27
-pydantic==2.13.3
-
-# Utilities
-timm==1.0.26
-numpy==2.4.4
-pillow==12.2.0
-psutil==7.2.2
-mediapipe==0.10.35
-opencv-python-headless==4.13.0.92
-
-# Required by transformers / diffusers
-sentencepiece==0.2.1
-bitsandbytes==0.49.2
+# API and image IO
+fastapi>=0.136,<1
+uvicorn[standard]>=0.46,<1
+python-multipart>=0.0.27,<1
+pydantic>=2.13,<3
+pillow>=12,<13
+psutil>=7,<8

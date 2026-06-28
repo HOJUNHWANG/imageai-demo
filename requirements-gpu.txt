@@ -1,3 +1,4 @@
-# GPU extras — installed by start.bat after CUDA torch is confirmed.
+# GPU extras; installed by start.bat after CUDA torch is confirmed.
 # Do NOT include torch here (handled separately to pick the right CUDA version).
-# xformers removed: compatibility issues across torch versions; Flash SDP used instead.
+# xFormers is installed conditionally by start.bat. Version 0.0.29.post2 is the
+# Windows wheel matched to this project's torch 2.6.0 + CUDA 12.4 runtime.
