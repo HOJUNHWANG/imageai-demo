@@ -19,6 +19,9 @@ export type ModelProfile = {
   prequantized: boolean;
   gated: boolean;
   content_tuning: string;
+  download_gb: number;
+  license: string;
+  cached: boolean;
 };
 
 export type StudioConfig = {
@@ -26,6 +29,9 @@ export type StudioConfig = {
   profiles: Record<"generate" | "edit", Record<ProfileId, ModelProfile>>;
   safety_checker: boolean;
   attention_backend: string;
+  hf_token_configured: boolean;
+  free_disk_gb: number;
+  max_upload_mb: number;
   note: string;
 };
 
@@ -42,6 +48,7 @@ export type JobStatus = {
   eta_seconds: number | null;
   stage_elapsed: number;
   elapsed: number;
+  cancellable: boolean;
 };
 
 export type StudioStatus = {

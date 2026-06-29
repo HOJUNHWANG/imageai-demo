@@ -11,6 +11,8 @@ def test_download_progress_is_honestly_indeterminate() -> None:
     assert snapshot["stage"] == "downloading"
     assert snapshot["indeterminate"] is True
     assert snapshot["eta_seconds"] is None
+    assert snapshot["cancellable"] is False
+    assert job.cancel() is False
 
 
 def test_inference_progress_uses_real_denoising_steps() -> None:
@@ -27,6 +29,8 @@ def test_inference_progress_uses_real_denoising_steps() -> None:
     assert snapshot["overall_progress"] == 55.0
     assert snapshot["indeterminate"] is False
     assert snapshot["eta_seconds"] is not None
+    assert snapshot["cancellable"] is True
+    assert job.cancel() is True
 
     job.finish("Done")
     finished = job.snapshot()

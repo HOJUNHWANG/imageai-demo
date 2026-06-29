@@ -14,9 +14,9 @@ def test_profiles_have_distinct_runtime_strategies() -> None:
     assert get_profile("generate", "balanced").prequantized is True
 
 
-def test_generate_request_defaults_to_balanced() -> None:
+def test_generate_request_defaults_to_fast() -> None:
     request = GenerateRequest(prompt="portrait")
-    assert request.profile == "balanced"
+    assert request.profile == "fast"
 
 
 def test_fast_pixel_budget_preserves_aspect_ratio_approximately() -> None:

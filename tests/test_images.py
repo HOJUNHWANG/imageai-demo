@@ -1,6 +1,10 @@
+import io
+
+import pytest
 from PIL import Image
 
-from backend.core.images import composite_at_original_resolution, model_size
+from backend.core import images
+from backend.core.images import composite_at_original_resolution, decode_image, model_size
 
 
 def test_mask_composite_preserves_original_pixels() -> None:
@@ -24,3 +28,13 @@ def test_model_size_keeps_aspect_and_pixel_budget() -> None:
     assert height % 32 == 0
     assert width * height <= 1024 * 1024
     assert abs((width / height) - (4 / 3)) < 0.05
+
+
+def test_decode_rejects_excessive_pixel_count(monkeypatch: pytest.MonkeyPatch) -> None:
+    source = Image.new("RGB", (100, 100))
+    payload = io.BytesIO()
+    source.save(payload, format="PNG")
+    monkeypatch.setattr(images, "MAX_INPUT_PIXELS", 9_999)
+
+    with pytest.raises(ValueError, match="pixel input limit"):
+        decode_image(payload.getvalue())

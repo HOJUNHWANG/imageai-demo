@@ -40,6 +40,7 @@ class JobSnapshot:
     stage_elapsed: float = 0.0
     elapsed: float = 0.0
     cancelled: bool = False
+    cancellable: bool = False
 
 
 class JobState:
@@ -77,6 +78,7 @@ class JobState:
             self._job.message = message
             self._job.step = step
             self._job.total = total
+            self._job.cancellable = stage == "inference"
 
             if stage == "inference" and total:
                 stage_progress = min(1.0, max(0.0, step / total))
@@ -104,6 +106,7 @@ class JobState:
             self._job.stage_progress = 1.0
             self._job.overall_progress = 100.0
             self._job.indeterminate = False
+            self._job.cancellable = False
             self._job.eta_seconds = 0.0
             self._job.elapsed = now - self._job.started_at
             self._job.stage_elapsed = now - self._job.stage_started_at
@@ -115,15 +118,19 @@ class JobState:
             self._job.stage = "error"
             self._job.message = message
             self._job.indeterminate = False
+            self._job.cancellable = False
             self._job.eta_seconds = None
             if self._job.started_at:
                 self._job.elapsed = now - self._job.started_at
                 self._job.stage_elapsed = now - self._job.stage_started_at
 
-    def cancel(self) -> None:
+    def cancel(self) -> bool:
         with self._lock:
+            if not self._job.active or not self._job.cancellable:
+                return False
             self._job.cancelled = True
             self._job.message = "Cancellation requested"
+            return True
 
     def check_cancelled(self) -> None:
         with self._lock:

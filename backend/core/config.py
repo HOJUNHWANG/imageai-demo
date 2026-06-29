@@ -29,6 +29,8 @@ class ModelProfile:
     prequantized: bool = False
     gated: bool = False
     content_tuning: str = "none"
+    download_gb: float = 0.0
+    license: str = "model-specific"
 
     def public(self) -> dict:
         data = asdict(self)
@@ -47,6 +49,8 @@ GENERATE_PROFILES = {
         guidance=4.0,
         gated=True,
         content_tuning="uncensored",
+        download_gb=72.0,
+        license="other / FLUX.1-dev terms",
     ),
     "balanced": ModelProfile(
         id="balanced",
@@ -59,6 +63,8 @@ GENERATE_PROFILES = {
         prequantized=True,
         gated=True,
         content_tuning="nsfw",
+        download_gb=6.1,
+        license="Apache-2.0",
     ),
     "fast": ModelProfile(
         id="fast",
@@ -71,6 +77,8 @@ GENERATE_PROFILES = {
         long_side=896,
         max_pixels=896 * 896,
         content_tuning="abliterated text encoder",
+        download_gb=30.6,
+        license="Apache-2.0",
     ),
 }
 
@@ -86,6 +94,8 @@ EDIT_PROFILES = {
         guidance=1.0,
         true_cfg=4.0,
         content_tuning="base weights",
+        download_gb=53.8,
+        license="Apache-2.0",
     ),
     "balanced": ModelProfile(
         id="balanced",
@@ -101,6 +111,8 @@ EDIT_PROFILES = {
         lora_id=os.getenv("EDIT_BALANCED_LORA", "lightx2v/Qwen-Image-Edit-2511-Lightning"),
         lora_weight="Qwen-Image-Edit-2511-Lightning-8steps-V1.0-bf16.safetensors",
         content_tuning="distilled LoRA",
+        download_gb=54.7,
+        license="Apache-2.0",
     ),
     "fast": ModelProfile(
         id="fast",
@@ -116,10 +128,12 @@ EDIT_PROFILES = {
         transformer_id=os.getenv("EDIT_FAST_TRANSFORMER", "prithivMLmods/Qwen-Image-Edit-Rapid-AIO-V23"),
         transformer_subfolder=None,
         content_tuning="NSFW rapid transformer",
+        download_gb=45.0,
+        license="Apache-2.0",
     ),
 }
 
-DEFAULT_PROFILE = os.getenv("DEFAULT_PROFILE", "balanced")
+DEFAULT_PROFILE = os.getenv("DEFAULT_PROFILE", "fast")
 ENABLE_4BIT = os.getenv("ENABLE_4BIT", "1") == "1"
 QUANTIZE_TEXT_ENCODERS = os.getenv("QUANTIZE_TEXT_ENCODERS", "1") == "1"
 CPU_OFFLOAD = os.getenv("CPU_OFFLOAD", "1") == "1"
@@ -128,6 +142,7 @@ LOCAL_FILES_ONLY = os.getenv("LOCAL_FILES_ONLY", "0") == "1"
 HF_TOKEN = os.getenv("HF_TOKEN") or None
 
 MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", "32"))
+MAX_INPUT_PIXELS = int(os.getenv("MAX_INPUT_PIXELS", str(40_000_000)))
 MAX_LONG_SIDE = int(os.getenv("MAX_LONG_SIDE", "1280"))
 MAX_PIXELS = int(os.getenv("MAX_PIXELS", str(1024 * 1024)))
 

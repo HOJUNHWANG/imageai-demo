@@ -2,19 +2,21 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from typing import Literal
 
 import torch
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel, Field
-from PIL import Image
+from PIL import Image, UnidentifiedImageError
 
 from ..core.config import (
     ATTENTION_BACKEND,
     DEFAULT_PROFILE,
     EDIT_PROFILES,
     GENERATE_PROFILES,
+    HF_TOKEN,
     MAX_UPLOAD_MB,
     get_profile,
 )
@@ -29,6 +31,7 @@ from ..core.models import MODELS
 from ..core.runtime import INFERENCE_LOCK, JOB, clear_memory, hardware_info
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 MAX_UPLOAD = MAX_UPLOAD_MB * 1024 * 1024
 ProfileId = Literal["quality", "balanced", "fast"]
 
@@ -38,7 +41,7 @@ class GenerateRequest(BaseModel):
     profile: ProfileId = DEFAULT_PROFILE  # type: ignore[assignment]
     width: int = Field(1024, ge=512, le=1536)
     height: int = Field(1024, ge=512, le=1536)
-    seed: int = -1
+    seed: int = Field(-1, ge=-1, le=2**31 - 1)
 
 
 def _seed(value: int) -> int:
@@ -62,6 +65,20 @@ def _timings(load: float, inference: float, postprocess: float, total: float) ->
         "postprocess": round(postprocess, 2),
         "total": round(total, 2),
     }
+
+
+def _job_failure_message(exc: Exception) -> str:
+    message = str(exc)
+    lowered = message.lower()
+    if message == "CANCELLED_BY_USER":
+        return "Cancelled"
+    if "out of memory" in lowered or isinstance(exc, (torch.cuda.OutOfMemoryError, MemoryError)):
+        return "GPU out of memory"
+    if message.startswith("INSUFFICIENT_DISK:"):
+        return "Not enough disk space for the selected model"
+    if "gated" in lowered or "repository access" in lowered or "401" in message or "403" in message:
+        return "Hugging Face model access is required"
+    return "The local model failed"
 
 
 def _run_generate(request: GenerateRequest) -> dict:
@@ -109,7 +126,7 @@ def _run_generate(request: GenerateRequest) -> dict:
             "timings": _timings(load_elapsed, inference_elapsed, post_elapsed, elapsed),
         }
     except Exception as exc:
-        JOB.fail("Cancelled" if str(exc) == "CANCELLED_BY_USER" else str(exc))
+        JOB.fail(_job_failure_message(exc))
         raise
     finally:
         INFERENCE_LOCK.release()
@@ -172,7 +189,7 @@ def _run_edit(
             "timings": _timings(load_elapsed, inference_elapsed, post_elapsed, elapsed),
         }
     except Exception as exc:
-        JOB.fail("Cancelled" if str(exc) == "CANCELLED_BY_USER" else str(exc))
+        JOB.fail(_job_failure_message(exc))
         raise
     finally:
         INFERENCE_LOCK.release()
@@ -183,13 +200,41 @@ def _translate_error(exc: Exception) -> HTTPException:
         return HTTPException(409, "The GPU is already running another job")
     if str(exc) == "CANCELLED_BY_USER":
         return HTTPException(499, "Cancelled")
-    if isinstance(exc, torch.cuda.OutOfMemoryError):
+    message = str(exc)
+    if (
+        isinstance(exc, (torch.cuda.OutOfMemoryError, MemoryError))
+        or "out of memory" in message.lower()
+    ):
         MODELS.unload()
         return HTTPException(507, "GPU out of memory; the active model was unloaded")
-    message = str(exc)
-    if "gated repo" in message.lower() or "403" in message:
+    if message.startswith("INSUFFICIENT_DISK:"):
+        _, required, free = message.split(":", 2)
+        return HTTPException(
+            507,
+            f"Not enough disk space for this model (need about {required} GB including reserve; {free} GB free)",
+        )
+    lowered = message.lower()
+    if (
+        "gated repo" in lowered
+        or "gatedrepoerror" in lowered
+        or "repository access" in lowered
+        or "401" in message
+        or "403" in message
+    ):
         return HTTPException(424, "This model requires accepting its Hugging Face terms and setting HF_TOKEN")
-    return HTTPException(500, message)
+    if isinstance(exc, (ValueError, UnidentifiedImageError)):
+        return HTTPException(422, message or "Invalid image input")
+    logger.exception("Studio request failed")
+    return HTTPException(500, "The local model failed; check the backend log for details")
+
+
+async def _read_limited(upload: UploadFile) -> bytes:
+    data = bytearray()
+    while chunk := await upload.read(1024 * 1024):
+        data.extend(chunk)
+        if len(data) > MAX_UPLOAD:
+            raise HTTPException(413, f"File exceeds {MAX_UPLOAD_MB} MB")
+    return bytes(data)
 
 
 @router.get("/health")
@@ -204,12 +249,27 @@ def status():
 
 @router.get("/config")
 def config():
+    try:
+        from huggingface_hub import get_token
+
+        token_configured = bool(HF_TOKEN or get_token())
+    except Exception:
+        token_configured = bool(HF_TOKEN)
     return {
         "default_profile": DEFAULT_PROFILE,
         "profiles": {
-            "generate": {key: value.public() for key, value in GENERATE_PROFILES.items()},
-            "edit": {key: value.public() for key, value in EDIT_PROFILES.items()},
+            "generate": {
+                key: {**value.public(), "cached": MODELS.is_profile_cached(value)}
+                for key, value in GENERATE_PROFILES.items()
+            },
+            "edit": {
+                key: {**value.public(), "cached": MODELS.is_profile_cached(value)}
+                for key, value in EDIT_PROFILES.items()
+            },
         },
+        "hf_token_configured": token_configured,
+        "free_disk_gb": MODELS.free_disk_gb(),
+        "max_upload_mb": MAX_UPLOAD_MB,
         "safety_checker": False,
         "attention_backend": ATTENTION_BACKEND,
         "note": "No application-level or Diffusers pipeline safety checker is installed.",
@@ -227,25 +287,21 @@ async def generate(request: GenerateRequest):
 @router.post("/edit")
 async def edit(
     image: UploadFile = File(...),
-    prompt: str = Form(...),
-    negative: str = Form(""),
+    prompt: str = Form(..., min_length=1, max_length=4000),
+    negative: str = Form("", max_length=4000),
     mask: UploadFile | None = File(None),
     profile: ProfileId = Form(DEFAULT_PROFILE),  # type: ignore[assignment]
-    seed: int = Form(-1),
-    feather: int = Form(8),
+    seed: int = Form(-1, ge=-1, le=2**31 - 1),
+    feather: int = Form(8, ge=0, le=64),
 ):
     if not prompt.strip():
         raise HTTPException(422, "Prompt is required")
-    image_bytes = await image.read()
-    if len(image_bytes) > MAX_UPLOAD:
-        raise HTTPException(413, f"Image exceeds {MAX_UPLOAD_MB} MB")
     try:
+        image_bytes = await _read_limited(image)
         original = decode_image(image_bytes)
         final_mask = None
         if mask is not None:
-            mask_bytes = await mask.read()
-            if len(mask_bytes) > MAX_UPLOAD:
-                raise HTTPException(413, f"Mask exceeds {MAX_UPLOAD_MB} MB")
+            mask_bytes = await _read_limited(mask)
             if mask_bytes:
                 final_mask = decode_mask(mask_bytes, original.size)
         return await asyncio.to_thread(
@@ -266,7 +322,11 @@ async def edit(
 
 @router.post("/cancel")
 def cancel():
-    JOB.cancel()
+    snapshot = JOB.snapshot()
+    if not snapshot["active"]:
+        raise HTTPException(409, "No active job to cancel")
+    if not JOB.cancel():
+        raise HTTPException(409, "Model download and loading cannot be interrupted safely")
     return {"status": "cancellation_requested"}
 
 

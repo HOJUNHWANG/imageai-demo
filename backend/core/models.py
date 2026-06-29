@@ -3,8 +3,10 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 import threading
 import time
+from pathlib import Path
 
 import torch
 
@@ -65,7 +67,13 @@ class ModelManager:
                 return self._pipe, 0.0, True
 
             self.unload()
-            self._load_stage = "loading" if self._profile_cached(profile) else "downloading"
+            cached = self.is_profile_cached(profile)
+            if not cached:
+                free_gb = self.free_disk_gb()
+                required_gb = profile.download_gb + 5.0
+                if free_gb < required_gb:
+                    raise RuntimeError(f"INSUFFICIENT_DISK:{required_gb:.1f}:{free_gb:.1f}")
+            self._load_stage = "loading" if cached else "downloading"
             message = (
                 f"Loading cached {profile.label} model"
                 if self._load_stage == "loading"
@@ -97,7 +105,7 @@ class ModelManager:
         except Exception:
             return False
 
-    def _profile_cached(self, profile: ModelProfile) -> bool:
+    def is_profile_cached(self, profile: ModelProfile) -> bool:
         required = [(profile.model_id, "model_index.json")]
         if profile.transformer_id:
             required.append((profile.transformer_id, "config.json"))
@@ -105,7 +113,20 @@ class ModelManager:
             required.append((profile.lora_id, profile.lora_weight))
         return all(self._file_cached(model_id, filename) for model_id, filename in required)
 
+    @staticmethod
+    def free_disk_gb() -> float:
+        try:
+            from huggingface_hub.constants import HF_HUB_CACHE
+
+            path = Path(HF_HUB_CACHE).expanduser()
+            while not path.exists() and path.parent != path:
+                path = path.parent
+            return round(shutil.disk_usage(path).free / 1024**3, 1)
+        except Exception:
+            return round(shutil.disk_usage(Path.cwd()).free / 1024**3, 1)
+
     def _load_update(self, message: str, progress: float) -> None:
+        JOB.check_cancelled()
         is_download = self._load_stage == "downloading"
         prefix = "Downloading / " if is_download else ""
         JOB.update(self._load_stage, prefix + message, stage_progress=None if is_download else progress)

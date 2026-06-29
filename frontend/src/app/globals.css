@@ -64,6 +64,11 @@ main { min-height: 100vh; }
 .model-strip .checker { background: var(--lime); color: var(--lime-dark); }
 .error-banner { margin: 16px 28px 0; background: #fee4e2; color: var(--danger); border: 1px solid #fda29b; padding: 11px 14px; border-radius: 10px; display: flex; justify-content: space-between; font-size: 13px; }
 .error-banner button { border: 0; background: transparent; cursor: pointer; text-decoration: underline; }
+.access-warning { margin: 16px 28px 0; background: #fff4cf; color: #6f4800; border: 1px solid #e8c768; padding: 11px 14px; border-radius: 10px; font-size: 13px; }
+button:disabled, input:disabled { cursor: not-allowed; opacity: .45; }
+button:focus-visible, input:focus-visible, textarea:focus-visible, summary:focus-visible, a:focus-visible {
+  outline: 3px solid rgba(49,92,252,.3); outline-offset: 2px;
+}
 
 .workspace { display: grid; grid-template-columns: 340px minmax(0, 1fr); min-height: calc(100vh - 118px); }
 .edit-workspace { grid-template-columns: 310px minmax(380px, 1fr) minmax(340px, .8fr); }
@@ -141,7 +146,7 @@ summary { cursor: pointer; color: var(--muted); font-size: 12px; font-weight: 70
 .job-spinner { width: 26px; height: 26px; border: 2px solid #484b48; border-top-color: var(--lime); border-radius: 50%; animation: spin .85s linear infinite; }
 .job-percent { min-width: 48px; color: var(--lime); font: 800 15px/1 monospace; text-align: right; }
 .job-dock button { color: white; border: 1px solid #555; background: transparent; border-radius: 8px; padding: 7px 10px; cursor: pointer; font-size: 10px; }
-.job-dock button:hover { border-color: #999; }
+.job-dock button:hover:not(:disabled) { border-color: #999; }
 
 .phase-line { position: relative; display: grid; grid-template-columns: repeat(4, 1fr); margin: 15px 0 12px; }
 .phase-line::before { content: ""; position: absolute; top: 10px; left: 10%; right: 10%; height: 1px; background: #484b48; }
@@ -170,7 +175,9 @@ summary { cursor: pointer; color: var(--muted); font-size: 12px; font-weight: 70
   .mode-switch { grid-row: 2; grid-column: 1 / -1; margin-bottom: 10px; }
   .topbar { height: auto; min-height: 76px; padding-top: 12px; }
   .runtime > div { display: none; }
-  .model-strip { margin-top: 10px; overflow-x: auto; padding-inline: 16px; }
+  .model-strip { margin-top: 10px; padding: 10px 16px; flex-wrap: wrap; gap: 7px; overflow: hidden; }
+  .model-strip > b { flex: 1 1 calc(100% - 70px); min-width: 0; overflow-wrap: anywhere; }
+  .model-strip i { white-space: normal; }
   .workspace, .edit-workspace { display: block; }
   .control-panel, .editor-panel { border-right: 0; border-bottom: 1px solid var(--line); }
   .source-stage { height: auto; min-height: 380px; }
@@ -180,4 +187,8 @@ summary { cursor: pointer; color: var(--muted); font-size: 12px; font-weight: 70
   .job-percent { display: none; }
   .job-head b { max-width: 48vw; }
   .job-stats span:nth-child(2) { display: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
 }

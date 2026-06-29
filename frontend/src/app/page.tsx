@@ -104,6 +104,7 @@ const MaskCanvas = forwardRef<MaskHandle, { src: string; enabled: boolean; brush
         <img src={src} alt="Edit source" />
         <canvas
           ref={canvasRef}
+          aria-label="Paint the area allowed to change"
           onPointerDown={(event) => {
             if (!enabled) return;
             drawing.current = true;
@@ -143,24 +144,36 @@ function Slider({ label, value, min, max, step = 1, onChange }: {
 
 const PROFILE_IDS: ProfileId[] = ["quality", "balanced", "fast"];
 
-function ProfileSelector({ profiles, selected, onChange }: {
+function ProfileSelector({ profiles, selected, onChange, disabled = false }: {
   profiles?: Record<ProfileId, ModelProfile>;
   selected: ProfileId;
   onChange: (profile: ProfileId) => void;
+  disabled?: boolean;
 }) {
   return (
     <div className="profile-picker" aria-label="Performance profile">
       {PROFILE_IDS.map((id) => {
         const profile = profiles?.[id];
         return (
-          <button key={id} className={selected === id ? "selected" : ""} onClick={() => onChange(id)}>
+          <button
+            key={id}
+            className={selected === id ? "selected" : ""}
+            aria-pressed={selected === id}
+            disabled={disabled}
+            onClick={() => onChange(id)}
+          >
             <span>{profile?.label || id}</span>
             <b>{profile?.steps || "–"} steps</b>
             {profile?.gated && <i>HF token</i>}
           </button>
         );
       })}
-      {profiles && <p>{profiles[selected].description}</p>}
+      {profiles && (
+        <p>
+          {profiles[selected].description} First download ≈ {profiles[selected].download_gb} GB · {profiles[selected].license}
+          {profiles[selected].cached && " · cached"}
+        </p>
+      )}
     </div>
   );
 }
@@ -219,7 +232,9 @@ function ProgressDock({ job, onCancel }: { job: JobStatus | null; onCancel: () =
           <b>{message}</b>
         </div>
         <strong className="job-percent">{indeterminate ? "•••" : `${Math.round(percent)}%`}</strong>
-        <button onClick={onCancel}>Cancel</button>
+        <button disabled={!job?.cancellable} onClick={onCancel}>
+          {job?.cancellable ? "Cancel" : "Loading…"}
+        </button>
       </div>
 
       <div className="phase-line">
@@ -251,14 +266,14 @@ export default function Home() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
-  const [generateProfile, setGenerateProfile] = useState<ProfileId>("balanced");
+  const [generateProfile, setGenerateProfile] = useState<ProfileId>("fast");
   const [generatePrompt, setGeneratePrompt] = useState("");
   const [width, setWidth] = useState(1024);
   const [height, setHeight] = useState(1024);
   const [generateSeed, setGenerateSeed] = useState(-1);
   const [generateResult, setGenerateResult] = useState<ImageResult | null>(null);
 
-  const [editProfile, setEditProfile] = useState<ProfileId>("balanced");
+  const [editProfile, setEditProfile] = useState<ProfileId>("fast");
   const [sourceFile, setSourceFile] = useState<File | null>(null);
   const [sourceUrl, setSourceUrl] = useState("");
   const [editPrompt, setEditPrompt] = useState("");
@@ -276,10 +291,21 @@ export default function Home() {
       setGenerateProfile(value.default_profile);
       setEditProfile(value.default_profile);
     }).catch(() => undefined);
-    const poll = () => getStatus().then(setStatus).catch(() => setStatus(null));
-    poll();
-    const timer = window.setInterval(poll, 500);
-    return () => window.clearInterval(timer);
+    let stopped = false;
+    let timer = 0;
+    const poll = async () => {
+      let delay = 3000;
+      try {
+        const next = await getStatus();
+        if (!stopped) setStatus(next);
+        delay = next.job.active ? 500 : 3000;
+      } catch {
+        if (!stopped) setStatus(null);
+      }
+      if (!stopped) timer = window.setTimeout(poll, delay);
+    };
+    void poll();
+    return () => { stopped = true; window.clearTimeout(timer); };
   }, []);
 
   useEffect(() => () => { if (sourceUrl) URL.revokeObjectURL(sourceUrl); }, [sourceUrl]);
@@ -313,23 +339,45 @@ export default function Home() {
     await run(() => editImage(form), setEditResult);
   };
 
+  const chooseSource = (file?: File) => {
+    if (!file) return;
+    if (!file.type.startsWith("image/")) {
+      setError("Choose a supported image file");
+      return;
+    }
+    const maxUploadMb = config?.max_upload_mb || 32;
+    if (file.size > maxUploadMb * 1024 * 1024) {
+      setError(`Image exceeds the ${maxUploadMb} MB upload limit`);
+      return;
+    }
+    if (sourceUrl) URL.revokeObjectURL(sourceUrl);
+    setError("");
+    setSourceFile(file);
+    setSourceUrl(URL.createObjectURL(file));
+    setEditResult(null);
+    maskRef.current?.clear();
+  };
+
   const activeJob = status?.job.active || busy;
   const selectedId = mode === "generate" ? generateProfile : editProfile;
   const selectedProfile = config?.profiles[mode][selectedId];
   const selectedModel = selectedProfile?.transformer_id || selectedProfile?.model_id || "Loading model catalog…";
+  const accessBlocked = Boolean(
+    selectedProfile?.gated && !selectedProfile.cached && !config?.hf_token_configured,
+  );
 
   return (
     <main>
       <header className="topbar">
         <div className="brand"><span className="brand-mark">M</span><div><b>Morrow</b><small>local image studio</small></div></div>
         <nav className="mode-switch">
-          <button className={mode === "generate" ? "active" : ""} onClick={() => setMode("generate")}>Generate</button>
-          <button className={mode === "edit" ? "active" : ""} onClick={() => setMode("edit")}>Edit</button>
+          <button aria-pressed={mode === "generate"} disabled={activeJob} className={mode === "generate" ? "active" : ""} onClick={() => setMode("generate")}>Generate</button>
+          <button aria-pressed={mode === "edit"} disabled={activeJob} className={mode === "edit" ? "active" : ""} onClick={() => setMode("edit")}>Edit</button>
         </nav>
         <div className="runtime">
           <span className={`status-dot ${status ? "online" : ""}`} />
           <div><b>{status?.hardware.gpu_name || "Backend offline"}</b><small>{status ? `${status.hardware.vram_allocated_gb} / ${status.hardware.vram_total_gb} GB VRAM` : "Start the local API"}</small></div>
-          <button title="Unload active model" onClick={() => unloadModel().catch((e) => setError(e.message))}>Unload</button>
+          <button disabled={activeJob} title="Unload active model" onClick={() => unloadModel().catch((e) => setError(e.message))}>Unload</button>
         </div>
       </header>
 
@@ -342,25 +390,30 @@ export default function Home() {
       </section>
 
       {error && <div className="error-banner"><span>{error}</span><button onClick={() => setError("")}>Dismiss</button></div>}
+      {accessBlocked && (
+        <div className="access-warning" role="alert">
+          This profile needs accepted Hugging Face model terms and an HF_TOKEN in .env.local before its first download.
+        </div>
+      )}
 
       {mode === "generate" ? (
         <section className="workspace">
           <aside className="control-panel">
             <div className="section-heading"><span>01</span><div><h2>Create</h2><p>Describe the image you want.</p></div></div>
             <label className="field-label">Performance</label>
-            <ProfileSelector profiles={config?.profiles.generate} selected={generateProfile} onChange={setGenerateProfile} />
-            <label className="field-label">Prompt</label>
-            <textarea value={generatePrompt} onChange={(e) => setGeneratePrompt(e.target.value)} placeholder="A cinematic portrait in soft window light…" rows={8} />
+            <ProfileSelector profiles={config?.profiles.generate} selected={generateProfile} onChange={setGenerateProfile} disabled={activeJob} />
+            <label className="field-label" htmlFor="generate-prompt">Prompt</label>
+            <textarea id="generate-prompt" maxLength={4000} value={generatePrompt} onChange={(e) => setGeneratePrompt(e.target.value)} placeholder="A cinematic portrait in soft window light…" rows={8} />
             <div className="preset-grid">
               {[[1024, 1024, "Square"], [1152, 768, "Landscape"], [768, 1152, "Portrait"]].map(([w, h, label]) => (
-                <button key={String(label)} className={width === w && height === h ? "selected" : ""} onClick={() => { setWidth(Number(w)); setHeight(Number(h)); }}>
+                <button key={String(label)} aria-pressed={width === w && height === h} disabled={activeJob} className={width === w && height === h ? "selected" : ""} onClick={() => { setWidth(Number(w)); setHeight(Number(h)); }}>
                   <span style={{ aspectRatio: `${w}/${h}` }} />{label}
                 </button>
               ))}
             </div>
-            <label className="field-label compact">Seed</label>
-            <input className="number-input" type="number" value={generateSeed} onChange={(e) => setGenerateSeed(Number(e.target.value))} />
-            <button className="primary-action" disabled={activeJob || !generatePrompt.trim()} onClick={submitGenerate}>{activeJob ? "Working…" : "Generate image"}</button>
+            <label className="field-label compact" htmlFor="generate-seed">Seed</label>
+            <input id="generate-seed" min={-1} max={2 ** 31 - 1} className="number-input" type="number" value={generateSeed} onChange={(e) => setGenerateSeed(Number(e.target.value))} />
+            <button className="primary-action" disabled={activeJob || accessBlocked || !generatePrompt.trim()} onClick={submitGenerate}>{activeJob ? "Working…" : "Generate image"}</button>
           </aside>
           <div className="canvas-panel"><ResultView result={generateResult} busy={activeJob} empty="Your image will appear here" /></div>
         </section>
@@ -369,38 +422,27 @@ export default function Home() {
           <aside className="control-panel">
             <div className="section-heading"><span>01</span><div><h2>Instruction</h2><p>Say only what should change.</p></div></div>
             <label className="field-label">Performance</label>
-            <ProfileSelector profiles={config?.profiles.edit} selected={editProfile} onChange={setEditProfile} />
-            <label className="field-label">Edit instruction</label>
-            <textarea value={editPrompt} onChange={(e) => setEditPrompt(e.target.value)} placeholder="Change the jacket to dark green leather. Keep the person, pose and background unchanged." rows={6} />
+            <ProfileSelector profiles={config?.profiles.edit} selected={editProfile} onChange={setEditProfile} disabled={activeJob} />
+            <label className="field-label" htmlFor="edit-prompt">Edit instruction</label>
+            <textarea id="edit-prompt" maxLength={4000} value={editPrompt} onChange={(e) => setEditPrompt(e.target.value)} placeholder="Change the jacket to dark green leather. Keep the person, pose and background unchanged." rows={6} />
             <details>
               <summary>Advanced settings</summary>
-              <label className="field-label compact">Negative prompt</label>
-              <input value={negative} onChange={(e) => setNegative(e.target.value)} placeholder="Optional" />
-              <label className="field-label compact">Seed</label>
-              <input className="number-input" type="number" value={editSeed} onChange={(e) => setEditSeed(Number(e.target.value))} />
+              <label className="field-label compact" htmlFor="negative-prompt">Negative prompt</label>
+              <input id="negative-prompt" maxLength={4000} value={negative} onChange={(e) => setNegative(e.target.value)} placeholder="Optional" />
+              <label className="field-label compact" htmlFor="edit-seed">Seed</label>
+              <input id="edit-seed" min={-1} max={2 ** 31 - 1} className="number-input" type="number" value={editSeed} onChange={(e) => setEditSeed(Number(e.target.value))} />
             </details>
             <button className="primary-action" disabled={activeJob || !sourceFile || !editPrompt.trim()} onClick={submitEdit}>{activeJob ? "Working…" : "Apply edit"}</button>
           </aside>
 
           <div className="editor-panel">
             <div className="editor-toolbar">
-              <label className="upload-button">{sourceFile ? "Replace image" : "Choose image"}<input type="file" accept="image/*" onChange={(event) => {
-                const file = event.target.files?.[0];
-                if (!file) return;
-                if (sourceUrl) URL.revokeObjectURL(sourceUrl);
-                setSourceFile(file);
-                setSourceUrl(URL.createObjectURL(file));
-                setEditResult(null);
-              }} /></label>
-              <button className={useMask ? "active" : ""} disabled={!sourceFile} onClick={() => setUseMask((value) => !value)}>Brush mask</button>
+              <label className="upload-button">{sourceFile ? "Replace image" : "Choose image"}<input disabled={activeJob} type="file" accept="image/*" onChange={(event) => chooseSource(event.target.files?.[0])} /></label>
+              <button aria-pressed={useMask} className={useMask ? "active" : ""} disabled={!sourceFile || activeJob} onClick={() => setUseMask((value) => !value)}>Brush mask</button>
               {useMask && <><label>Brush <input type="range" min="12" max="160" value={brush} onChange={(e) => setBrush(Number(e.target.value))} /></label><button onClick={() => maskRef.current?.clear()}>Clear</button></>}
             </div>
             <div className="source-stage">
-              {sourceUrl ? <MaskCanvas ref={maskRef} src={sourceUrl} enabled={useMask} brush={brush} /> : <label className="drop-empty">Drop in an image to begin<input type="file" accept="image/*" onChange={(event) => {
-                const file = event.target.files?.[0];
-                if (!file) return;
-                setSourceFile(file); setSourceUrl(URL.createObjectURL(file));
-              }} /></label>}
+              {sourceUrl ? <MaskCanvas ref={maskRef} src={sourceUrl} enabled={useMask} brush={brush} /> : <label className="drop-empty">Choose an image to begin<input disabled={activeJob} type="file" accept="image/*" onChange={(event) => chooseSource(event.target.files?.[0])} /></label>}
             </div>
             {useMask && <div className="mask-options"><span>Only painted pixels may change. Everything else is copied from the original.</span><Slider label="Edge feather" value={feather} min={0} max={32} onChange={setFeather} /></div>}
           </div>

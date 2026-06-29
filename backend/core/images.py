@@ -7,17 +7,28 @@ import math
 
 from PIL import Image, ImageFilter, ImageOps
 
-from .config import MAX_LONG_SIDE, MAX_PIXELS
+from .config import MAX_INPUT_PIXELS, MAX_LONG_SIDE, MAX_PIXELS
+
+
+def _validate_input_size(image: Image.Image) -> None:
+    width, height = image.size
+    pixels = width * height
+    if width <= 0 or height <= 0 or pixels > MAX_INPUT_PIXELS:
+        raise ValueError(
+            f"Image dimensions exceed the {MAX_INPUT_PIXELS:,}-pixel input limit"
+        )
 
 
 def decode_image(data: bytes) -> Image.Image:
     image = Image.open(io.BytesIO(data))
+    _validate_input_size(image)
     image = ImageOps.exif_transpose(image)
     return image.convert("RGB")
 
 
 def decode_mask(data: bytes, size: tuple[int, int]) -> Image.Image:
     raw = Image.open(io.BytesIO(data))
+    _validate_input_size(raw)
     if "A" in raw.getbands():
         alpha = raw.getchannel("A")
         # Canvas masks use transparency outside the painted area.
