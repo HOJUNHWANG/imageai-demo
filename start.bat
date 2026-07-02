@@ -147,7 +147,7 @@ if exist "%~dp0.env.local" (
 :: ── Step 6: Safely clean up this workspace's old servers and start ───────────
 echo [6/6] Starting servers...
 
-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\clear_ports.ps1" -ProjectRoot "%~dp0"
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\clear_ports.ps1" -ProjectRoot "%~dp0."
 if errorlevel 1 (
     echo [ERROR] Could not safely free ports 8000 and 3000.
     pause & exit /b 1
@@ -155,9 +155,9 @@ if errorlevel 1 (
 del /f "%~dp0frontend\.next\dev\lock" >nul 2>&1
 timeout /t 1 /nobreak >nul
 
-start "Morrow Backend" cmd /k "cd /d %~dp0 && venv311\Scripts\python.exe -m uvicorn backend.main:app --app-dir "%~dp0" --host 127.0.0.1 --port 8000"
+start "Morrow Backend" /D "%~dp0" cmd /k venv311\Scripts\python.exe -m uvicorn backend.main:app --app-dir "%~dp0." --host 127.0.0.1 --port 8000
 timeout /t 3 /nobreak >nul
-start "Morrow Frontend" cmd /k "cd /d %~dp0frontend && npm run dev"
+start "Morrow Frontend" /D "%~dp0frontend" cmd /k npm run dev
 
 echo.
 echo ========================================

@@ -4,7 +4,11 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$root = [System.IO.Path]::GetFullPath($ProjectRoot).TrimEnd('\')
+$cleanProjectRoot = $ProjectRoot.Trim().Trim('"')
+if ([string]::IsNullOrWhiteSpace($cleanProjectRoot)) {
+    throw "ProjectRoot cannot be empty."
+}
+$root = [System.IO.Path]::GetFullPath($cleanProjectRoot).TrimEnd('\')
 $ports = @(8000, 3000)
 
 foreach ($port in $ports) {
